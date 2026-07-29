@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import math
 import random
+
+from flet_game.collision import SpatialHash
 
 from .types import (
     BulletData,
@@ -18,8 +21,8 @@ PLAYER_W = 40
 PLAYER_H = 52
 ENEMY_W = 36
 ENEMY_H = 36
-BOSS_W = 80
-BOSS_H = 80
+BOSS_W = 120
+BOSS_H = 120
 BULLET_W = 6
 BULLET_H = 16
 POWERUP_W = 24
@@ -40,6 +43,8 @@ class GalaxyManager:
         self.enemies: list[EnemyData] = []
         self.powerups: list[PowerUpData] = []
         self._time = 0.0
+        # Spatial hash for optimized collision detection
+        self._spatial_hash = SpatialHash(cell_size=64)
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
@@ -153,15 +158,36 @@ class GalaxyManager:
     # ── Enemies ────────────────────────────────────────────────────────────
 
     def _update_enemies(self, dt: float) -> None:
+        lvl = self.game.level
         for e in self.enemies:
             if not e.active:
                 continue
             e.y += e.speed * dt
-            e.x += e.move_dir * 60.0 * dt
+
+            # Sine-wave pathing — amplitude and frequency scale with level
+            if e.wave_amplitude > 0.0:
+                e.wave_phase += e.wave_frequency * dt
+                sine_offset = math.sin(e.wave_phase) * e.wave_amplitude
+                # Blend sine path with dodge input
+                e.x = max(
+                    0.0,
+                    min(DESIGN_W - e.sprite_w, e.x + sine_offset * dt * 60.0),
+                )
+
+            # More agile: change direction more frequently and dodge
+            # when the player's bullet is nearby
             e.move_timer -= dt
             if e.move_timer <= 0.0:
                 e.move_dir = random.uniform(-1.0, 1.0)
-                e.move_timer = random.uniform(1.0, 3.0)
+                e.move_timer = random.uniform(0.3, 1.5)
+            # Dodge sideways when a bullet is approaching
+            for b in self.bullets:
+                if not b.active:
+                    continue
+                if abs(b.x - (e.x + e.sprite_w / 2)) < 30 and b.y < e.y + e.sprite_h and b.y > e.y:
+                    e.move_dir = 1.0 if b.x < e.x else -1.0
+                    break
+            e.x += e.move_dir * 80.0 * dt  # faster lateral movement
             e.x = max(0.0, min(DESIGN_W - e.sprite_w, e.x))
 
             if e.kind in ("alien2", "boss"):
@@ -197,8 +223,8 @@ class GalaxyManager:
         lvl = self.game.level
         self.wave = WaveData(
             number=lvl,
-            per_wave=min(30, 8 + lvl * 2),
-            spawn_interval=max(0.35, 1.2 - lvl * 0.05),
+            per_wave=min(60, 12 + lvl * 3),
+            spawn_interval=max(0.2, 1.0 - lvl * 0.04),
             boss_wave=(lvl % 5 == 0),
             timer=0.5,
         )
@@ -210,20 +236,26 @@ class GalaxyManager:
             ["alien1", "alien1", "alien2"] if lvl >= 2 else ["alien1"]
         )
         if kind == "boss":
-            hp = 10 + lvl * 3
+            hp = 20 + lvl * 5
             sw, sh = BOSS_W, BOSS_H
-            speed = 40.0
-            shoot_int = random.uniform(1.0, 2.0)
+            speed = 50.0 + lvl * 2
+            shoot_int = random.uniform(0.4, 1.2)
+            wave_amp = 40.0 + lvl * 5.0
+            wave_freq = 1.5 + lvl * 0.3
         elif kind == "alien2":
-            hp = 2
+            hp = 3 if lvl >= 3 else 2
             sw, sh = ENEMY_W, ENEMY_H
-            speed = 70.0 + lvl * 4
-            shoot_int = random.uniform(1.5, 3.0)
+            speed = 90.0 + lvl * 5
+            shoot_int = random.uniform(0.8, 2.0)
+            wave_amp = 20.0 + lvl * 3.0
+            wave_freq = 2.0 + lvl * 0.2
         else:
             hp = 1
             sw, sh = ENEMY_W, ENEMY_H
-            speed = 55.0 + lvl * 3
+            speed = 70.0 + lvl * 4
             shoot_int = 99.0
+            wave_amp = 5.0 + lvl * 2.0
+            wave_freq = 2.5 + lvl * 0.15
         for e in self.enemies:
             if not e.active:
                 e.x = random.uniform(0.0, DESIGN_W - sw)
@@ -231,12 +263,15 @@ class GalaxyManager:
                 e.speed = speed
                 e.hp = hp
                 e.kind = kind
-                e.shoot_timer = random.uniform(1.0, 3.0)
+                e.shoot_timer = random.uniform(0.5, 2.0)
                 e.shoot_interval = shoot_int
                 e.move_dir = random.uniform(-1.0, 1.0)
-                e.move_timer = random.uniform(1.0, 3.0)
+                e.move_timer = random.uniform(0.3, 1.5)
                 e.sprite_w = sw
                 e.sprite_h = sh
+                e.wave_amplitude = wave_amp
+                e.wave_frequency = wave_freq
+                e.wave_phase = random.uniform(0.0, 2.0 * math.pi)
                 e.active = True
                 return
         self.enemies.append(
@@ -246,12 +281,15 @@ class GalaxyManager:
                 speed=speed,
                 hp=hp,
                 kind=kind,
-                shoot_timer=random.uniform(1.0, 3.0),
+                shoot_timer=random.uniform(0.5, 2.0),
                 shoot_interval=shoot_int,
                 move_dir=random.uniform(-1.0, 1.0),
-                move_timer=random.uniform(1.0, 3.0),
+                move_timer=random.uniform(0.3, 1.5),
                 sprite_w=sw,
                 sprite_h=sh,
+                wave_amplitude=wave_amp,
+                wave_frequency=wave_freq,
+                wave_phase=random.uniform(0.0, 2.0 * math.pi),
                 active=True,
             )
         )

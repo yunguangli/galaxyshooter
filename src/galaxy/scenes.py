@@ -29,7 +29,7 @@ from .manager import (
 from .sounds import AudioController
 from .sprites import POWERUP_COLORS, make_player_sprite, prewarm_pools
 
-_HOLD_MS = 2.0
+_HOLD_MS = 0.8
 
 
 def _rescale_from_page(page: ft.Page, scene: Scene) -> None:
@@ -159,6 +159,7 @@ class PlayView(Scene):
 
         self._game_over_played = False
         self._touch_x: float | None = None
+        self._prev_shot_time: float = -999.0
 
         self._setup_input()
         self._setup_update()
@@ -235,6 +236,11 @@ class PlayView(Scene):
 
             if m.player.last_shot_time != prev_shot_time and self._audio.available:
                 self._audio.play_shoot()
+                # Dramatic muzzle flash scaled by power level
+                if self._player_sprite and m.player.alive:
+                    cx = m.player.x + PLAYER_W / 2
+                    cy = m.player.y
+                    self._effects.muzzle_flash(cx, cy, m.player.power_level)
 
             for puid, old_pu in prev_powerups.items():
                 if not old_pu.active and old_pu.y < DESIGN_H and self._audio.available:
@@ -423,8 +429,16 @@ class GameOverView(Scene):
         def restart(_=None) -> None:
             self._game.run_scene(PlayView(self._game))
 
-        btn = Button(
-            x=DESIGN_W / 2 - 70,
+        def restart_at_level(_=None) -> None:
+            # Reset player position and lives but keep the level
+            self._manager.game.level = max(1, self._manager.game.level)
+            self._manager.game.lives = 3
+            self._manager.game.status = "playing"
+            self._game.run_scene(PlayView(self._game))
+
+        # Restart button — full reset to level 1
+        btn_restart = Button(
+            x=DESIGN_W / 2 - 155,
             y=420,
             width=140,
             height=48,
@@ -437,7 +451,24 @@ class GameOverView(Scene):
             border_radius=24,
             on_click=restart,
         )
-        self.add(btn, z=10)
+        self.add(btn_restart, z=10)
+
+        # Continue button — restart at the current level
+        btn_continue = Button(
+            x=DESIGN_W / 2 + 15,
+            y=420,
+            width=140,
+            height=48,
+            text="CONTINUE",
+            text_size=20,
+            bold=True,
+            text_color="#ffffff",
+            color="#1a237e",
+            hover_color="#283593",
+            border_radius=24,
+            on_click=restart_at_level,
+        )
+        self.add(btn_continue, z=10)
 
         self._blink_time = 0.0
         self._tap_label = Label(
@@ -465,6 +496,10 @@ class GameOverView(Scene):
         @self.input.on_key_down("enter")
         def on_enter(_=None) -> None:
             restart()
+
+        @self.input.on_key_down("c")
+        def on_continue(_=None) -> None:
+            restart_at_level()
 
         @self.input.on_click
         def on_tap(x: float, y: float) -> None:

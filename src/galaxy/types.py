@@ -7,8 +7,8 @@ from dataclasses import dataclass
 class PlayerData:
     x: float = 180.0
     y: float = 620.0
-    speed: float = 280.0
-    fire_rate: float = 8.0
+    speed: float = 300.0
+    fire_rate: float = 10.0
     last_shot_time: float = -999.0
     power_level: int = 1
     invincible_until: float = 0.0
@@ -38,6 +38,10 @@ class EnemyData:
     active: bool = False
     sprite_w: float = 36.0
     sprite_h: float = 36.0
+    # Sine-wave pathing
+    wave_amplitude: float = 0.0
+    wave_frequency: float = 0.0
+    wave_phase: float = 0.0
 
 
 @dataclass

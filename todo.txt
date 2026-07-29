@@ -1,0 +1,14 @@
+Create a vertical Galaxy Shooter game with Python Flet module (you can use flet mcp for syntex) . Use as much as possible the  ./src/flet_game , a game engine written in Flet. 
+Portrait mobile style  (400x700 or page.width x page.height properties in Flet, whichever larger).
+ Player controls a cool blue futuristic spaceship (spaceship.png) at the bottom that moves left and right
+  with arrow keys or on-screen touch buttons. The ship shoots lasers upward automatically or with tap/space. 
+  Enemies (colorful alien ships, alient1.png and alien2.png and boss.png) come down from the top in formations. 
+  Destroy enemies and avoid their shots. Add glowing effects, particle explosions, and starfield background that scrolls down. 
+  Collect power-ups. Show score at the top, lives (hearts), and level. Include start screen and game over screen with restart. 
+  Make it fun, smooth, and visually vibrant like classic vertical shooters and prefessional looking and levels. You can use some built in sound
+  and visual effects in the flet_game engine or you can suggest where to downloand.  UI shall be centered. Make full use of all phone real estate.
+  excessive use of update() can affect performance.
+  Some Flet references:
+  assets: https://flet.dev/docs/cookbook/assets
+  client storage: https://flet.dev/docs/cookbook/client-storage
+  audio: https://flet.dev/docs/services/audio/

@@ -36,9 +36,6 @@ class AudioController:
     def play_death(self) -> None:
         self._play("death", 0.8)
 
-    def play_victory(self) -> None:
-        self._play("victory", 0.7)
-
     def play_defeat(self) -> None:
         self._play("defeat", 0.7)
 

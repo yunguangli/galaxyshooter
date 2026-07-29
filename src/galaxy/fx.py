@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import random
 
 import flet as ft
@@ -54,8 +53,6 @@ class Star:
 
 class Starfield:
     def __init__(self, width: float, height: float) -> None:
-        self._width = width
-        self._height = height
         self.stars: list[Star] = [Star(width, height) for _ in range(STAR_COUNT)]
         self._containers: list[ft.Container] = []
 
@@ -93,14 +90,6 @@ class Effects:
         )
         self._safe_call(
             self._fx.ring, x, y, color="#ffffff", radius=18, thickness=2, duration=200
-        )
-
-    def small_explosion(self, x: float, y: float) -> None:
-        self._safe_call(
-            self._fx.burst, x, y, color="#ff9100", count=5, distance=20, size=3, duration=250
-        )
-        self._safe_call(
-            self._fx.ring, x, y, color="#ffffff", radius=12, thickness=2, duration=180
         )
 
     def big_explosion(self, x: float, y: float) -> None:

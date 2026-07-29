@@ -3,8 +3,6 @@ from __future__ import annotations
 import math
 import random
 
-from flet_game.collision import SpatialHash
-
 from .types import (
     BulletData,
     EnemyData,
@@ -43,8 +41,6 @@ class GalaxyManager:
         self.enemies: list[EnemyData] = []
         self.powerups: list[PowerUpData] = []
         self._time = 0.0
-        # Spatial hash for optimized collision detection
-        self._spatial_hash = SpatialHash(cell_size=64)
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
@@ -134,7 +130,6 @@ class GalaxyManager:
                 x=x - ENEMY_BULLET_W / 2,
                 y=y,
                 speed=200.0,
-                is_enemy=True,
                 active=True,
             )
         )
@@ -155,10 +150,11 @@ class GalaxyManager:
             if b.y > DESIGN_H + ENEMY_BULLET_H:
                 b.active = False
 
-    # ── Enemies ────────────────────────────────────────────────────────────
-
     def _update_enemies(self, dt: float) -> None:
         lvl = self.game.level
+        # Hoist active bullet list outside enemy loop — avoid O(N*M) list comp
+        active_bullets = [b for b in self.bullets if b.active]
+        dodge_enabled = len(active_bullets) < 20
         for e in self.enemies:
             if not e.active:
                 continue
@@ -181,16 +177,15 @@ class GalaxyManager:
                 e.move_dir = random.uniform(-1.0, 1.0)
                 e.move_timer = random.uniform(0.3, 1.5)
             # Dodge sideways when a bullet is approaching
-            for b in self.bullets:
-                if not b.active:
-                    continue
-                if abs(b.x - (e.x + e.sprite_w / 2)) < 30 and b.y < e.y + e.sprite_h and b.y > e.y:
-                    e.move_dir = 1.0 if b.x < e.x else -1.0
-                    break
-            e.x += e.move_dir * 80.0 * dt  # faster lateral movement
+            if dodge_enabled:
+                for b in active_bullets:
+                    if abs(b.x - (e.x + e.sprite_w / 2)) < 30 and b.y < e.y + e.sprite_h and b.y > e.y:
+                        e.move_dir = 1.0 if b.x < e.x else -1.0
+                        break
+            e.x += e.move_dir * 60.0 * dt  # lateral movement
             e.x = max(0.0, min(DESIGN_W - e.sprite_w, e.x))
 
-            if e.kind in ("alien2", "boss"):
+            if e.kind in ("alien1", "alien2", "boss"):
                 e.shoot_timer -= dt
                 if e.shoot_timer <= 0.0:
                     ex = e.x + e.sprite_w / 2
@@ -223,8 +218,8 @@ class GalaxyManager:
         lvl = self.game.level
         self.wave = WaveData(
             number=lvl,
-            per_wave=min(60, 12 + lvl * 3),
-            spawn_interval=max(0.2, 1.0 - lvl * 0.04),
+            per_wave=min(80, 15 + lvl * 4),
+            spawn_interval=max(0.15, 0.9 - lvl * 0.03),
             boss_wave=(lvl % 5 == 0),
             timer=0.5,
         )
@@ -253,7 +248,7 @@ class GalaxyManager:
             hp = 1
             sw, sh = ENEMY_W, ENEMY_H
             speed = 70.0 + lvl * 4
-            shoot_int = 99.0
+            shoot_int = random.uniform(1.5, 3.5)
             wave_amp = 5.0 + lvl * 2.0
             wave_freq = 2.5 + lvl * 0.15
         for e in self.enemies:
@@ -360,13 +355,15 @@ class GalaxyManager:
         self._check_powerups_vs_player()
 
     def _check_bullets_vs_enemies(self) -> None:
+        # Early-out when no enemies are active
+        active_enemies = [e for e in self.enemies if e.active]
+        if not active_enemies:
+            return
         for b in self.bullets:
             if not b.active:
                 continue
             bx, by = b.x, b.y
-            for e in self.enemies:
-                if not e.active:
-                    continue
+            for e in active_enemies:
                 if (
                     bx < e.x + e.sprite_w
                     and bx + BULLET_W > e.x

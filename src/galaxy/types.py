@@ -20,7 +20,6 @@ class BulletData:
     x: float = 0.0
     y: float = 0.0
     speed: float = 500.0
-    is_enemy: bool = False
     active: bool = False
 
 

@@ -103,20 +103,20 @@ def make_powerup_sprite(kind: str) -> Sprite:
 
 def prewarm_pools(scene) -> dict:
     bullet_pool = ObjectPool(
-        factory=make_player_bullet_sprite, max_size=30, scene=scene, z=5
+        factory=make_player_bullet_sprite, max_size=40, scene=scene, z=5
     ).prewarm()
     enemy_bullet_pool = ObjectPool(
-        factory=make_enemy_bullet_sprite, max_size=20, scene=scene, z=5
+        factory=make_enemy_bullet_sprite, max_size=30, scene=scene, z=5
     ).prewarm()
     alien1_pool = ObjectPool(
         factory=lambda: make_enemy_sprite("alien1"),
-        max_size=10,
+        max_size=20,
         scene=scene,
         z=3,
     ).prewarm()
     alien2_pool = ObjectPool(
         factory=lambda: make_enemy_sprite("alien2"),
-        max_size=5,
+        max_size=10,
         scene=scene,
         z=3,
     ).prewarm()
@@ -125,7 +125,7 @@ def prewarm_pools(scene) -> dict:
     ).prewarm()
     powerup_pool = ObjectPool(
         factory=lambda: make_powerup_sprite("spread"),
-        max_size=5,
+        max_size=8,
         scene=scene,
         z=4,
     ).prewarm()

@@ -12,20 +12,15 @@ from .hud import HUD
 from .manager import (
     BOSS_H,
     BOSS_W,
-    BULLET_H,
-    BULLET_W,
     DESIGN_H,
     DESIGN_W,
-    ENEMY_BULLET_H,
-    ENEMY_BULLET_W,
     ENEMY_H,
     ENEMY_W,
     PLAYER_H,
     PLAYER_W,
-    POWERUP_H,
-    POWERUP_W,
     GalaxyManager,
 )
+from .types import WaveData
 from .sounds import AudioController
 from .sprites import POWERUP_COLORS, make_player_sprite, prewarm_pools
 
@@ -117,12 +112,13 @@ class StartView(Scene):
 
 
 class PlayView(Scene):
-    def __init__(self, game: Game) -> None:
+    def __init__(self, game: Game, manager: GalaxyManager | None = None) -> None:
         super().__init__(
             game.page, DESIGN_W, DESIGN_H, "#0a0a1a", clip=True
         )
         self._game = game
-        self._manager = GalaxyManager()
+        self._manager = manager or GalaxyManager()
+        self._continue_from_death = manager is not None
         self._effects: Effects | None = None
         self._hud = HUD()
         self._audio: AudioController | None = None
@@ -136,7 +132,33 @@ class PlayView(Scene):
         self._touch_shoot_ts = -999.0
 
     def on_enter(self) -> None:
-        self._manager.start_game()
+        if self._continue_from_death:
+            # Resume at current level: reset player state, keep score/level
+            self._manager.player.alive = True
+            self._manager.player.x = 180.0
+            self._manager.player.y = 620.0
+            self._manager.player.invincible_until = 0.0
+            self._manager.player.power_level = 1
+            self._manager.player.fire_rate = 8.0
+            self._manager.game.status = "playing"
+            self._manager.game.lives = 3
+            self._manager.game.combo = 0
+            self._manager.game.comboTimer = 0.0
+            self._manager.game.activePowerUp = ""
+            self._manager.game.powerUpTimer = 0.0
+            self._manager.bullets.clear()
+            self._manager.enemy_bullets.clear()
+            self._manager.enemies.clear()
+            self._manager.powerups.clear()
+            self._manager.wave = WaveData(
+                number=self._manager.game.level,
+                per_wave=min(80, 15 + self._manager.game.level * 4),
+                spawn_interval=max(0.15, 0.9 - self._manager.game.level * 0.03),
+                boss_wave=(self._manager.game.level % 5 == 0),
+                timer=0.5,
+            )
+        else:
+            self._manager.start_game()
 
         self._starfield = Starfield(DESIGN_W, DESIGN_H)
         with self.defer_rebuild():
@@ -159,7 +181,6 @@ class PlayView(Scene):
 
         self._game_over_played = False
         self._touch_x: float | None = None
-        self._prev_shot_time: float = -999.0
 
         self._setup_input()
         self._setup_update()
@@ -430,11 +451,7 @@ class GameOverView(Scene):
             self._game.run_scene(PlayView(self._game))
 
         def restart_at_level(_=None) -> None:
-            # Reset player position and lives but keep the level
-            self._manager.game.level = max(1, self._manager.game.level)
-            self._manager.game.lives = 3
-            self._manager.game.status = "playing"
-            self._game.run_scene(PlayView(self._game))
+            self._game.run_scene(PlayView(self._game, self._manager))
 
         # Restart button — full reset to level 1
         btn_restart = Button(

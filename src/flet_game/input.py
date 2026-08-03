@@ -1,4 +1,4 @@
-"""
+﻿"""
 input.py — InputManager: keyboard and mouse/touch state for flet_game.
 
 Keyboard state is polled inside game-loop callbacks (no "async" required):
@@ -20,7 +20,9 @@ Mouse / touch events reach the canvas through a GestureDetector that
 InputManager creates when you call input.wrap(canvas):
 
     canvas = ft.Stack([player.control, ...], width=W, height=H)
-    page.add(input.wrap(canvas))   # <-- add the GestureDetector, not canvas
+    layout = ft.Column([input.wrap(canvas)])
+    input.keyboard_listener.content = layout
+    page.add(input.keyboard_listener)   # <-- add the KeyboardListener
 
     @input.on_click
     def handle_click(x: float, y: float) -> None:
@@ -28,25 +30,23 @@ InputManager creates when you call input.wrap(canvas):
 
 Implementation notes
 --------------------
-Flet's page.on_keyboard_event fires on key-down (and OS key-repeat when held).
-Key-up events are not sent by all Flet builds; InputManager handles this with a
-dual-timestamp strategy:
+InputManager uses ft.KeyboardListener to receive keyboard events. The listener
+is a control that must be added to the page's widget tree — Scene handles this
+by wrapping its root stack with the listener.
 
-  _first_press[k]  — time.monotonic() of the initial press
-  _last_event[k]   — time.monotonic() of the most-recent key-down or repeat
+KeyboardListener fires three separate events:
+  • on_key_down   — once when a key is first pressed
+  • on_key_repeat — repeatedly while a key is held (OS key-repeat)
+  • on_key_up     — once when a key is released
 
-is_key_down() returns True while:
-  • it is within 350 ms of the first press  (covers the OS repeat delay, ~300 ms)
-  • OR the last event was within 150 ms       (covers the OS repeat interval, ~30 ms)
-
-If Flet does supply key-up events (type attribute on KeyboardEvent), they are
-used directly and the timestamps are cleared immediately.
+is_key_down() maintains a simple set of currently-held keys, updated by these
+events. No timestamp heuristics are needed.
 """
 
 from __future__ import annotations
 
 import inspect
-import time
+import asyncio
 from typing import Callable, Optional
 
 import flet as ft
@@ -86,15 +86,6 @@ def _norm(key: str) -> str:
     return _ARROW_ALIASES.get(norm, norm)
 
 
-# Timeout (seconds) that covers the OS initial-repeat delay (~300 ms on most
-# systems) so is_key_down stays True between the first press and the first repeat.
-_INITIAL_HOLD_WINDOW: float = 0.35
-
-# Timeout (seconds) above the fastest OS key-repeat interval (~16 ms at 60 Hz)
-# to treat a key as still held between consecutive repeat events.
-_REPEAT_HOLD_WINDOW: float = 0.15
-
-
 # ─── InputManager ─────────────────────────────────────────────────────────────
 
 class InputManager:
@@ -103,7 +94,7 @@ class InputManager:
     Parameters
     ----------
     page : ft.Page
-        The Flet page.  InputManager registers page.on_keyboard_event here.
+        The Flet page.
 
     Keyboard polling (inside a GameLoop callback)::
 
@@ -131,7 +122,9 @@ class InputManager:
     Mouse / touch (wrap the canvas before adding to the page)::
 
         canvas = ft.Stack([player.control], width=W, height=H)
-        page.add(input.wrap(canvas))
+        layout = ft.Column([input.wrap(canvas)])
+        input.keyboard_listener.content = layout
+        page.add(input.keyboard_listener)
 
         @input.on_click
         def spawn(x: float, y: float) -> None:
@@ -150,10 +143,9 @@ class InputManager:
         self._page = page
 
         # Keys currently considered "held" (normalised names).
-        # We derive this from timestamps rather than a simple set so that key-up
-        # is detected even when Flet does not send explicit key-up events.
-        self._first_press: dict[str, float] = {}   # key → time of initial press
-        self._last_event:  dict[str, float] = {}   # key → time of latest key event
+        # Updated directly by on_key_down / on_key_up events from the
+        # KeyboardListener — no timestamp heuristics needed.
+        self._held_keys: set[str] = set()
 
         # Callback tables.
         self._key_down_cbs: dict[str, list[Callable]] = {}
@@ -167,14 +159,13 @@ class InputManager:
         self._tap_pos: tuple[float, float] = (0.0, 0.0)
 
         # Active flag — False while the scene is suspended in the stack.
-        # _on_kb_event returns early when False so that a scene that is
+        # Event handlers return early when False so that a scene that is
         # off-screen does not intercept key events.
         self._active: bool = True
 
         # Virtual keys: injected by on-screen touch buttons via press_key() /
         # release_key().  is_key_down() returns True for any key in this set
-        # regardless of timestamps, giving perfect frame-accurate hold detection
-        # without the OS key-repeat timing heuristics.
+        # regardless of _held_keys, giving frame-accurate hold detection.
         self._virtual_keys: set[str] = set()
 
         # GestureDetector created by wrap() — stored so on_drag() can lazily
@@ -186,8 +177,33 @@ class InputManager:
         # N syscalls per frame when N keys are polled in one update callback.
         self._cached_now: float = -1.0
 
-        # Register page-level keyboard handler.
-        self._page.on_keyboard_event = self._on_kb_event
+        # ft.KeyboardListener — a control that must be added to the page's
+        # widget tree.  Scene wraps its root stack with this listener by
+        # setting .content = root_stack after construction.
+        self._kb_listener = ft.KeyboardListener(
+            content=ft.Stack(),  # placeholder — replaced by Scene
+            autofocus=True,
+            on_key_down=self._on_key_down,
+            on_key_up=self._on_key_up,
+            on_key_repeat=self._on_key_repeat,
+        )
+
+        # Task wrapping `KeyboardListener.focus()` (which can be async).  It is
+        # stored and cancelled on teardown so it never outlives the scene —
+        # otherwise a pending task is garbage-collected while awaiting focus and
+        # asyncio warns "Task was destroyed but it is pending!" on scene switch.
+        self._focus_task: asyncio.Task | None = None
+
+    # ── KeyboardListener property ──────────────────────────────────────────────
+
+    @property
+    def keyboard_listener(self) -> ft.KeyboardListener:
+        """The ``ft.KeyboardListener`` control.
+
+        Exposed so that :class:`~flet_game.Scene` can insert it into the
+        widget tree.  Do not add this to the page yourself — Scene handles it.
+        """
+        return self._kb_listener
 
     # ── Keyboard — polling ─────────────────────────────────────────────────────
 
@@ -208,32 +224,12 @@ class InputManager:
                 player.x -= 200 * dt
         """
         k = _norm(key)
-        # _norm already maps " " and "space" → "space", so no extra alias needed.
 
         # Virtual keys (from on-screen touch buttons) are always authoritative.
         if k in self._virtual_keys:
             return True
 
-        # Use the cached frame timestamp if frame_tick() was called this frame,
-        # otherwise fall back to a fresh monotonic read.
-        now = self._cached_now if self._cached_now >= 0 else time.monotonic()
-        first = self._first_press.get(k)
-        if first is None:
-            return False  # key was never pressed
-
-        # Still within the initial-hold window (before OS repeat kicks in)?
-        if now - first < _INITIAL_HOLD_WINDOW:
-            return True
-
-        # Still receiving repeat events?
-        last = self._last_event.get(k)
-        if last is not None and now - last < _REPEAT_HOLD_WINDOW:
-            return True
-
-        # Key timed out — clean up and report released.
-        self._first_press.pop(k, None)
-        self._last_event.pop(k, None)
-        return False
+        return k in self._held_keys
 
     def frame_tick(self, now: float) -> None:
         """Cache the current frame timestamp so every :meth:`is_key_down` call
@@ -294,9 +290,6 @@ class InputManager:
     def on_key_up(self, key: str) -> Callable:
         """Decorator — fire *fn(e)* when *key* is released.
 
-        Note: requires Flet to emit key-up events (available in most Flet 1.0+
-        builds).  If not supported, this callback will not fire.
-
             @input.on_key_up("escape")
             def quit(e: ft.KeyboardEvent) -> None:
                 loop.stop()
@@ -311,11 +304,14 @@ class InputManager:
     def wrap(self, control: ft.Control) -> ft.GestureDetector:
         """Wrap *control* in a ``ft.GestureDetector`` tied to this InputManager.
 
-        Returns the ``GestureDetector`` — add *that* to the page instead of the
-        raw control::
+        Returns the ``GestureDetector`` — add it to your layout, then set
+        ``keyboard_listener.content`` to the layout and add the listener
+        to the page::
 
             canvas = ft.Stack([...], width=W, height=H)
-            page.add(input.wrap(canvas))
+            layout = ft.Column([input.wrap(canvas)])
+            input.keyboard_listener.content = layout
+            page.add(input.keyboard_listener)
 
         After wrapping, ``on_click``, ``on_drag``, and ``on_hover`` decorators
         will receive events from the canvas.
@@ -327,6 +323,7 @@ class InputManager:
         """
         self._gd = ft.GestureDetector(
             content=control,
+            expand=True,
             on_tap_down=self._on_tap_down,  # fires click callbacks (tap may not fire with pan)
             on_pan_start=self._on_drag_start if self._drag_cbs else None,
             on_pan_update=self._on_drag      if self._drag_cbs else None,
@@ -377,12 +374,21 @@ class InputManager:
 
     # ── Cleanup ────────────────────────────────────────────────────────────────
 
+    def _cancel_focus_task(self) -> None:
+        """Cancel any pending keyboard-focus task without harming the loop."""
+        if self._focus_task is not None and not self._focus_task.done():
+            self._focus_task.cancel()
+        self._focus_task = None
+
     def destroy(self) -> None:
         """Unregister all event handlers.  Call when the scene is torn down."""
-        self._page.on_keyboard_event = None
+        self._cancel_focus_task()
+        self._kb_listener.on_key_down = None
+        self._kb_listener.on_key_up = None
+        self._kb_listener.on_key_repeat = None
         self._active = False
-        self._first_press.clear()
-        self._last_event.clear()
+        self._held_keys.clear()
+        self._virtual_keys.clear()
         self._key_down_cbs.clear()
         self._key_up_cbs.clear()
         self._click_cbs.clear()
@@ -392,64 +398,81 @@ class InputManager:
     def deactivate(self) -> None:
         """Suspend keyboard processing. Used by Game.push_scene to silence a scene
         that is off-screen but still alive in the stack."""
+        self._cancel_focus_task()
         self._active = False
-        self._first_press.clear()
-        self._last_event.clear()
+        self._held_keys.clear()
 
     def activate(self) -> None:
-        """Resume keyboard processing and re-register the page handler.
+        """Resume keyboard processing and re-register event handlers.
         Call when a paused scene is restored to the top of the stack."""
-        self._first_press.clear()
-        self._last_event.clear()
+        self._held_keys.clear()
         self._active = True
-        self._page.on_keyboard_event = self._on_kb_event
+        self._kb_listener.on_key_down = self._on_key_down
+        self._kb_listener.on_key_up = self._on_key_up
+        self._kb_listener.on_key_repeat = self._on_key_repeat
+        self._focus_keyboard_listener()
+
+    def _focus_keyboard_listener(self) -> None:
+        focus = getattr(self._kb_listener, "focus", None)
+        if not callable(focus):
+            return
+        # Reuse the in-flight task if one is already waiting on focus; creating
+        # a new one each call (activate/tap) leaks pending tasks.
+        if self._focus_task is not None and not self._focus_task.done():
+            return
+        try:
+            result = focus()
+            if inspect.isawaitable(result):
+                self._focus_task = asyncio.create_task(self._await_focus(result))
+        except Exception:
+            pass
+
+    async def _await_focus(self, awaitable) -> None:
+        try:
+            await awaitable
+        except RuntimeError as exc:
+            if "session closed" not in str(exc).lower():
+                raise
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if self._focus_task is not None and self._focus_task.done():
+                self._focus_task = None
 
     # ── Internal event handlers ────────────────────────────────────────────────
 
-    def _on_kb_event(self, e: ft.KeyboardEvent) -> None:
+    def _on_key_down(self, e) -> None:
+        """Handle key-down event from KeyboardListener."""
         if not self._active:
             return
         k = _norm(e.key)
-
-        # Detect key-up if Flet provides a 'type' attribute on the event.
-        # The attribute may be a string or an enum; normalise to a plain string.
-        raw_type = getattr(e, "type", None)
-        if raw_type is not None:
-            type_str = (raw_type.value if hasattr(raw_type, "value") else str(raw_type)).lower()
-            if "up" in type_str:
-                # Explicit key-up — clear timestamps and fire callbacks.
-                self._first_press.pop(k, None)
-                self._last_event.pop(k, None)
-                self._dispatch(self._key_up_cbs, k, e)
-                return
-
-        # Key-down or repeat event.
-        now = time.monotonic()
-        first = self._first_press.get(k)
-        last  = self._last_event.get(k)
-
-        # A press is "fresh" when the key was never pressed, or when it timed
-        # out (i.e. the key was released and Flet sent no key-up event).
-        # Without this check, the first press sets _first_press[k] forever and
-        # every subsequent press is wrongly treated as a repeat.
-        is_fresh = (
-            first is None
-            or (
-                now - first >= _INITIAL_HOLD_WINDOW
-                and (last is None or now - last >= _REPEAT_HOLD_WINDOW)
-            )
-        )
+        # Only fire on_key_down callbacks on the initial press (not repeats).
+        is_fresh = k not in self._held_keys
+        self._held_keys.add(k)
         if is_fresh:
-            self._first_press[k] = now
             self._dispatch(self._key_down_cbs, k, e)
-        # Always refresh the last-event timestamp (covers OS key-repeat events).
-        self._last_event[k] = now
+
+    def _on_key_up(self, e) -> None:
+        """Handle key-up event from KeyboardListener."""
+        if not self._active:
+            return
+        k = _norm(e.key)
+        self._held_keys.discard(k)
+        self._dispatch(self._key_up_cbs, k, e)
+
+    def _on_key_repeat(self, e) -> None:
+        """Handle key-repeat event from KeyboardListener.
+
+        The key is already in _held_keys from the initial _on_key_down,
+        so is_key_down() already returns True.  No additional action needed.
+        """
+        pass
 
     def _dispatch(
         self,
         table: dict[str, list[Callable]],
         key: str,
-        event: ft.KeyboardEvent,
+        event,
     ) -> None:
         for cb in table.get(key, []):
             if inspect.iscoroutinefunction(cb):
@@ -458,6 +481,7 @@ class InputManager:
                 cb(event)
 
     def _on_tap_down(self, e) -> None:
+        self._focus_keyboard_listener()
         pos = getattr(e, "local_position", None)
         if pos is not None:
             x, y = float(pos.x), float(pos.y)
@@ -473,6 +497,7 @@ class InputManager:
     def _on_drag_start(self, e) -> None:
         # on_pan_start must be registered to activate the pan gesture recognizer.
         # Fire drag callbacks with dx=dy=0 so callers know the drag began.
+        self._focus_keyboard_listener()
         pos = e.local_position
         x, y = float(pos.x), float(pos.y)
         for cb in self._drag_cbs:
@@ -502,5 +527,5 @@ class InputManager:
                 cb(x, y)
 
     def __repr__(self) -> str:
-        held = [k for k in self._first_press if self.is_key_down(k)]
+        held = [k for k in self._held_keys]
         return f"InputManager(held={held!r})"

@@ -63,6 +63,12 @@ Short aliases (recommended for new code)
 See docs/API.md for the full reference.
 """
 
+# ── Defensive patches for Flet internals (dead data-channel ports) ─────────
+from ._patch import install as _install_patches
+
+_install_patches()
+del _install_patches
+
 # ── Step 1: Sprite ────────────────────────────────────────────────────────────
 from .sprite import Sprite
 
@@ -104,6 +110,7 @@ from .platformer import PlatformerController, PlatformerWorld
 
 # ── Step 11: RaycastCanvas — Wolfenstein-style 3-D raycasting renderer ─────────
 from .raycast import RaycastCanvas, SpriteDef, DEFAULT_MAP, DEFAULT_WALL_COLORS
+from .wall_texture import WallTexture
 
 # ── Step 12: VirtualJoystick — dynamic on-screen analogue joystick ───────────
 from .joystick import VirtualJoystick
@@ -130,7 +137,7 @@ from .pool import ObjectPool
 from .isomap import IsoMap, IsoTile, iso_to_screen, screen_to_iso
 
 # ── Phase 5: PrefabLibrary — base64-embedded default sprites (no Pillow) ──────
-from .prefab import HERO, ENEMY, ITEM, SKELETON, SLIME, KEY, BAT, PISTOL, RIFLE, SWORD, BAZOOKA, FIST, PISTOL_FPS, RIFLE_FPS, SWORD_FPS, BAZOOKA_FPS, FIST_FPS, PrefabSprite, PrefabCharacter, make_prefab_sprite_defs
+from .prefab import HERO, ENEMY, ITEM, SKELETON, SLIME, KEY, MEDKIT, BAT, PISTOL, RIFLE, SWORD, BAZOOKA, FIST, PISTOL_FPS, RIFLE_FPS, SWORD_FPS, BAZOOKA_FPS, FIST_FPS, PrefabSprite, PrefabCharacter, make_prefab_sprite_defs
 
 # ── Phase 6: SpriteLibrary — dynamic asset scanner for user sprites ──────────
 from .sprite_library import SpriteLibrary, SpriteEntry, SpriteState
@@ -180,6 +187,7 @@ __all__ = [
     "PlatformerWorld",
     # Step 11 — Raycasting 3-D renderer
     "RaycastCanvas",
+    "WallTexture",
     "SpriteDef",
     "DEFAULT_MAP",
     "DEFAULT_WALL_COLORS",
@@ -210,6 +218,7 @@ __all__ = [
     "SKELETON",
     "SLIME",
     "KEY",
+    "MEDKIT",
     "BAT",
     "PISTOL",
     "RIFLE",

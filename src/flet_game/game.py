@@ -100,6 +100,12 @@ class Game:
 
         page.title = title
         page.bgcolor = bgcolor
+        # Centre the fixed-size canvas in the page on both axes so the UI is
+        # centred on phones/tablets whose screens differ from width x height.
+        # (Scene._wrapped is fixed to the canvas width so CENTER aligns the
+        # Stack itself; without these the canvas hugs the top-left corner.)
+        page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
+        page.vertical_alignment = ft.MainAxisAlignment.CENTER
         page.window.width = self._width + 20
         page.window.height = self._height + 80
         page.window.resizable = resizable

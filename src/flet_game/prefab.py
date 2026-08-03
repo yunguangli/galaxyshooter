@@ -490,6 +490,36 @@ def _gen_item_key() -> str:
     return _make_png(W, H, bytes(p))
 
 
+def _gen_item_medkit() -> str:
+    """32 x 32 white medkit box with a red cross."""
+    W, H = 32, 32
+    p = bytearray(W * H * 4)
+    # Box body (white with grey rim)
+    for y in range(H):
+        for x in range(W):
+            if 3 <= x <= 28 and 5 <= y <= 29:
+                if x in (3, 28) or y in (5, 29):
+                    _px(p, W, x, y, 120, 120, 120)      # rim
+                else:
+                    _px(p, W, x, y, 240, 240, 240)      # face
+    # Red cross (vertical + horizontal bars, with darker edge)
+    for y in range(11, 24):
+        for x in range(12, 20):
+            _px(p, W, x, y, 210, 30, 30)
+    for y in range(12, 23):
+        for x in range(13, 19):
+            _px(p, W, x, y, 230, 40, 40)
+    for y in range(13, 17):
+        for x in range(6, 26):
+            _px(p, W, x, y, 230, 40, 40)
+    # Cross highlight
+    for x in range(14, 18):
+        _px(p, W, x, 13, 255, 110, 110)
+    # Handle
+    _box(p, W, 8, 3, 24, 5, 160, 160, 160)
+    return _make_png(W, H, bytes(p))
+
+
 def _gen_bat_idle() -> str:
     """32 x 32 dark bat with wings spread (idle)."""
     W, H = 32, 32
@@ -756,94 +786,72 @@ def _gen_weapon_pistol_fps() -> str:
     """128x128 FPS pistol — 60° angle, hand from bottom-right, muzzle upper-right."""
     W, H = 128, 128
     p = bytearray(W * H * 4)
-    # Right arm (bottom-right corner, fills to bottom edge)
-    _box(p, W, 76, 80, 118, 128, 195, 155, 115)
-    _box(p, W, 80, 74, 124, 128, 200, 160, 120)
-    # Forearm skin details
-    _px(p, W, 82, 90, 185, 145, 105)
-    _px(p, W, 88, 95, 185, 145, 105)
-    _px(p, W, 94, 100, 185, 145, 105)
-    # Right hand gripping pistol (knuckles)
-    _box(p, W, 68, 64, 96, 86, 210, 170, 130)
-    _px(p, W, 69, 65, 230, 190, 150)
-    _px(p, W, 73, 64, 230, 190, 150)
-    _px(p, W, 77, 64, 230, 190, 150)
-    _px(p, W, 81, 64, 230, 190, 150)
-    _px(p, W, 85, 64, 230, 190, 150)
-    _px(p, W, 89, 64, 230, 190, 150)
-    _px(p, W, 93, 65, 230, 190, 150)
-    # Finger creases
-    _px(p, W, 70, 72, 195, 155, 115)
-    _px(p, W, 74, 70, 195, 155, 115)
-    _px(p, W, 78, 70, 195, 155, 115)
-    _px(p, W, 82, 70, 195, 155, 115)
-    _px(p, W, 86, 70, 195, 155, 115)
-    _px(p, W, 90, 71, 195, 155, 115)
-    # Thumb wrapped around grip
-    _box(p, W, 62, 72, 70, 88, 205, 165, 125)
-    _px(p, W, 63, 73, 220, 180, 140)
-    # Pistol grip (brown, in hand)
-    _box(p, W, 68, 44, 84, 68, 139, 90, 43)
-    _box(p, W, 70, 46, 82, 66, 125, 80, 38)
-    _px(p, W, 71, 50, 110, 70, 32)
-    _px(p, W, 74, 56, 110, 70, 32)
-    _px(p, W, 77, 62, 110, 70, 32)
-    # Grip texture lines
-    _px(p, W, 69, 48, 100, 60, 28)
-    _px(p, W, 69, 52, 100, 60, 28)
-    _px(p, W, 69, 56, 100, 60, 28)
-    _px(p, W, 69, 60, 100, 60, 28)
-    # Trigger guard
-    _box(p, W, 60, 42, 68, 54, 100, 100, 100)
-    _px(p, W, 61, 46, 80, 80, 80)
-    _px(p, W, 62, 50, 80, 80, 80)
-    # Trigger
-    _px(p, W, 64, 48, 90, 90, 90)
-    _px(p, W, 64, 49, 90, 90, 90)
-    # Slide (60° angle)
+    # Right forearm and wrist
+    _box(p, W, 82, 82, 120, 128, 191, 151, 111)
+    _box(p, W, 86, 76, 126, 128, 202, 164, 124)
+    _px(p, W, 90, 92, 182, 142, 102)
+    _px(p, W, 96, 100, 182, 142, 102)
+    _px(p, W, 102, 108, 182, 142, 102)
+    _box(p, W, 74, 68, 98, 88, 208, 168, 128)
+    _box(p, W, 76, 70, 96, 86, 220, 182, 142)
+    # Fingers and thumb wrapped around the grip
+    for idx, fx in enumerate((76, 80, 84, 88, 92)):
+        _px(p, W, fx, 69 + (idx // 2), 236, 196, 156)
+        _px(p, W, fx, 77 - (idx % 2), 192, 152, 112)
+    _box(p, W, 68, 74, 76, 88, 205, 165, 125)
+    _px(p, W, 69, 75, 228, 188, 148)
+    # Angled grip and beavertail
+    for i in range(20):
+        gx = 74 - i // 3
+        gy = 46 + i
+        if gy >= 84:
+            break
+        _box(p, W, gx, gy, gx + 10, min(gy + 2, H), 52, 55, 60)
+        _px(p, W, gx + 1, gy, 76, 80, 86)
+    _box(p, W, 72, 44, 82, 50, 64, 68, 74)
+    for gy in range(50, 78, 6):
+        _px(p, W, 73, gy, 92, 96, 102)
+        _px(p, W, 77, gy + 1, 92, 96, 102)
+    # Trigger guard and trigger
+    _box(p, W, 58, 46, 70, 58, 88, 92, 98)
+    _box(p, W, 60, 48, 68, 56, 0, 0, 0, 0)
+    _px(p, W, 64, 51, 66, 66, 70)
+    _px(p, W, 64, 52, 66, 66, 70)
+    # Slide and frame
     for i in range(28):
-        sx = 68 - i
-        sy = 44 - i * 2
-        if sy < 0: break
-        _px(p, W, sx, sy, 120, 120, 120)
-        _px(p, W, sx, sy + 1, 120, 120, 120)
-        _px(p, W, sx + 1, sy, 145, 145, 145)
-        _px(p, W, sx - 1, sy + 2, 100, 100, 100)
-    # Slide serrations
-    for i in range(5):
-        sx = 62 - i * 4
-        sy = 32 - i * 8
-        if sy > 0:
-            _px(p, W, sx, sy, 100, 100, 100)
-            _px(p, W, sx, sy + 1, 100, 100, 100)
-    # Barrel (extending further)
-    for i in range(14):
-        bx = 40 - i
-        by = 0 - i * 2 + 40
-        if by < 0: break
-        _px(p, W, bx, by, 80, 80, 80)
-        _px(p, W, bx, by + 1, 80, 80, 80)
-        _px(p, W, bx + 1, by, 95, 95, 95)
-    # Muzzle (dark circle at tip)
-    _px(p, W, 26, 2, 50, 50, 50)
-    _px(p, W, 27, 2, 50, 50, 50)
-    _px(p, W, 28, 2, 50, 50, 50)
-    _px(p, W, 25, 3, 50, 50, 50)
-    _px(p, W, 29, 3, 50, 50, 50)
-    _px(p, W, 26, 4, 40, 40, 40)
-    _px(p, W, 27, 4, 40, 40, 40)
-    _px(p, W, 28, 4, 40, 40, 40)
-    # Front sight
-    _box(p, W, 28, 6, 30, 10, 150, 150, 150)
-    _px(p, W, 29, 7, 170, 170, 170)
-    # Rear sight (near hand)
-    _box(p, W, 62, 34, 66, 38, 150, 150, 150)
-    _px(p, W, 63, 35, 170, 170, 170)
-    # Ejection port
-    _box(p, W, 50, 28, 56, 34, 90, 90, 90)
-    _px(p, W, 51, 29, 75, 75, 75)
-    # Accessory rail (under barrel)
-    _box(p, W, 54, 40, 62, 44, 80, 80, 80)
+        sx = 67 - i
+        sy = 41 - i * 2
+        if sy < 6:
+            break
+        _box(p, W, sx, sy, sx + 12, sy + 3, 104, 108, 114)
+        _box(p, W, sx + 1, sy, sx + 11, sy + 1, 146, 150, 156)
+        _px(p, W, sx + 11, sy + 2, 74, 76, 82)
+    for i in range(24):
+        fx = 66 - i
+        fy = 46 - i * 2
+        if fy < 10:
+            break
+        _box(p, W, fx, fy, fx + 10, fy + 2, 70, 73, 78)
+        _px(p, W, fx + 1, fy, 98, 102, 108)
+    # Dust cover and muzzle extension
+    for i in range(12):
+        bx = 41 - i
+        by = 26 - i * 2
+        if by < 8:
+            break
+        _box(p, W, bx, by, bx + 8, by + 2, 78, 82, 88)
+        _px(p, W, bx + 1, by, 104, 108, 114)
+    # Ejection port and sights
+    _box(p, W, 48, 24, 57, 29, 66, 68, 72)
+    _px(p, W, 49, 25, 120, 124, 130)
+    _box(p, W, 28, 10, 31, 15, 148, 152, 160)
+    _box(p, W, 59, 33, 64, 37, 148, 152, 160)
+    _px(p, W, 60, 34, 174, 178, 186)
+    # Muzzle and barrel opening
+    _box(p, W, 22, 8, 28, 14, 54, 56, 60)
+    _px(p, W, 23, 10, 32, 34, 36)
+    _px(p, W, 24, 9, 26, 28, 30)
+    _px(p, W, 24, 11, 26, 28, 30)
     return _make_png(W, H, bytes(p))
 
 
@@ -851,102 +859,69 @@ def _gen_weapon_rifle_fps() -> str:
     """128x128 FPS rifle — 60° angle, two hands, muzzle upper-right."""
     W, H = 128, 128
     p = bytearray(W * H * 4)
-    # Right arm (bottom-right corner, fills to bottom edge)
-    _box(p, W, 78, 76, 118, 128, 195, 155, 115)
-    _box(p, W, 82, 70, 124, 128, 200, 160, 120)
-    # Forearm details
-    _px(p, W, 84, 86, 185, 145, 105)
-    _px(p, W, 90, 92, 185, 145, 105)
-    _px(p, W, 96, 98, 185, 145, 105)
-    # Right hand gripping stock
-    _box(p, W, 70, 64, 96, 84, 210, 170, 130)
-    _px(p, W, 71, 65, 230, 190, 150)
-    _px(p, W, 75, 64, 230, 190, 150)
-    _px(p, W, 79, 64, 230, 190, 150)
-    _px(p, W, 83, 64, 230, 190, 150)
-    _px(p, W, 87, 64, 230, 190, 150)
-    _px(p, W, 91, 64, 230, 190, 150)
-    _px(p, W, 95, 65, 230, 190, 150)
-    # Finger creases
-    _px(p, W, 72, 72, 195, 155, 115)
-    _px(p, W, 76, 70, 195, 155, 115)
-    _px(p, W, 80, 70, 195, 155, 115)
-    _px(p, W, 84, 70, 195, 155, 115)
-    _px(p, W, 88, 70, 195, 155, 115)
-    _px(p, W, 92, 71, 195, 155, 115)
-    # Thumb
-    _box(p, W, 64, 72, 72, 86, 205, 165, 125)
-    _px(p, W, 65, 73, 220, 180, 140)
-    # Rifle stock (brown wood)
-    _box(p, W, 72, 48, 96, 68, 139, 90, 43)
-    _box(p, W, 74, 50, 94, 66, 125, 80, 38)
-    _px(p, W, 76, 52, 110, 70, 32)
-    _px(p, W, 80, 58, 110, 70, 32)
-    _px(p, W, 84, 64, 110, 70, 32)
-    # Wood grain
-    _px(p, W, 73, 52, 115, 72, 35)
-    _px(p, W, 73, 56, 115, 72, 35)
-    _px(p, W, 73, 60, 115, 72, 35)
-    # Receiver (grey)
-    _box(p, W, 50, 34, 74, 52, 100, 100, 100)
-    _box(p, W, 52, 36, 72, 50, 115, 115, 115)
-    _px(p, W, 54, 38, 130, 130, 130)
-    _px(p, W, 60, 44, 130, 130, 130)
-    # Trigger guard
-    _box(p, W, 56, 50, 64, 60, 90, 90, 90)
-    _px(p, W, 57, 53, 70, 70, 70)
-    _px(p, W, 58, 56, 70, 70, 70)
-    # Trigger
-    _px(p, W, 59, 52, 80, 80, 80)
-    _px(p, W, 59, 53, 80, 80, 80)
-    # Magazine
-    _box(p, W, 58, 54, 66, 72, 60, 60, 60)
-    _box(p, W, 59, 56, 64, 70, 50, 50, 50)
-    # Left hand supporting foregrip
-    _box(p, W, 30, 44, 46, 58, 210, 170, 130)
-    _px(p, W, 31, 45, 230, 190, 150)
-    _px(p, W, 35, 44, 230, 190, 150)
-    _px(p, W, 39, 44, 230, 190, 150)
-    _px(p, W, 43, 44, 230, 190, 150)
-    # Left thumb
-    _box(p, W, 28, 50, 32, 58, 205, 165, 125)
-    # Barrel (60° angle)
-    for i in range(38):
-        bx = 50 - i
-        by = 34 - i * 2
-        if by < 0: break
-        _px(p, W, bx, by, 70, 70, 70)
-        _px(p, W, bx, by + 1, 70, 70, 70)
-        _px(p, W, bx + 1, by, 90, 90, 90)
-        _px(p, W, bx - 1, by + 2, 55, 55, 55)
-    # Muzzle brake
-    for i in range(4):
-        mx = 12 - i
-        my = 0 - i * 2 + 14
-        if my > 0: break
-        _px(p, W, mx, my, 60, 60, 60)
-        _px(p, W, mx + 1, my, 60, 60, 60)
-    # Muzzle (dark)
-    _px(p, W, 12, 2, 50, 50, 50)
-    _px(p, W, 13, 2, 50, 50, 50)
-    _px(p, W, 14, 2, 50, 50, 50)
-    _px(p, W, 11, 3, 50, 50, 50)
-    _px(p, W, 15, 3, 50, 50, 50)
-    _px(p, W, 12, 4, 40, 40, 40)
-    _px(p, W, 13, 4, 40, 40, 40)
-    _px(p, W, 14, 4, 40, 40, 40)
-    # Front sight
-    _box(p, W, 14, 6, 16, 12, 150, 150, 150)
-    _px(p, W, 15, 8, 170, 170, 170)
-    # Rear sight
-    _box(p, W, 44, 26, 50, 32, 150, 150, 150)
-    _px(p, W, 45, 28, 170, 170, 170)
-    # Scope rail
-    _box(p, W, 38, 24, 50, 28, 80, 80, 80)
-    _px(p, W, 39, 25, 95, 95, 95)
-    # Forward assist
-    _px(p, W, 66, 42, 85, 85, 85)
-    _px(p, W, 67, 42, 85, 85, 85)
+    # Shoulder-side forearm and firing hand
+    _box(p, W, 84, 80, 122, 128, 192, 152, 112)
+    _box(p, W, 88, 74, 128, 128, 203, 164, 124)
+    _px(p, W, 94, 92, 182, 142, 102)
+    _px(p, W, 100, 100, 182, 142, 102)
+    _px(p, W, 106, 108, 182, 142, 102)
+    _box(p, W, 72, 66, 98, 86, 209, 169, 129)
+    _box(p, W, 74, 68, 96, 84, 222, 184, 144)
+    for idx, fx in enumerate((74, 78, 82, 86, 90, 94)):
+        _px(p, W, fx, 67 + (idx // 2), 236, 196, 156)
+        _px(p, W, fx, 76 - (idx % 2), 194, 154, 114)
+    _box(p, W, 68, 72, 75, 86, 205, 165, 125)
+    # Buttstock and pistol grip
+    _box(p, W, 82, 46, 108, 70, 68, 52, 34)
+    _box(p, W, 86, 50, 104, 66, 94, 72, 46)
+    _box(p, W, 74, 52, 84, 78, 44, 46, 50)
+    _px(p, W, 75, 58, 74, 78, 84)
+    _px(p, W, 76, 64, 74, 78, 84)
+    # Receiver and top rail
+    _box(p, W, 58, 38, 84, 56, 86, 90, 96)
+    _box(p, W, 60, 40, 82, 54, 116, 120, 126)
+    _box(p, W, 56, 34, 82, 39, 58, 60, 66)
+    _px(p, W, 62, 42, 138, 142, 148)
+    _px(p, W, 70, 48, 138, 142, 148)
+    _px(p, W, 79, 44, 66, 70, 74)
+    # Trigger, guard, and magazine
+    _box(p, W, 62, 54, 72, 64, 72, 74, 80)
+    _box(p, W, 64, 56, 70, 62, 0, 0, 0, 0)
+    _px(p, W, 67, 58, 56, 58, 62)
+    _box(p, W, 64, 58, 73, 80, 52, 54, 58)
+    _box(p, W, 65, 60, 71, 78, 34, 36, 40)
+    # Handguard and support hand
+    for i in range(26):
+        hx = 58 - i
+        hy = 40 - i * 2
+        if hy < 12:
+            break
+        _box(p, W, hx, hy, hx + 11, hy + 3, 70, 74, 80)
+        _box(p, W, hx + 1, hy, hx + 10, hy + 1, 96, 100, 106)
+        _px(p, W, hx + 10, hy + 2, 52, 54, 58)
+    _box(p, W, 34, 40, 50, 58, 210, 170, 130)
+    _box(p, W, 36, 42, 48, 56, 224, 186, 146)
+    _px(p, W, 38, 42, 240, 202, 162)
+    _px(p, W, 42, 42, 240, 202, 162)
+    _px(p, W, 46, 43, 240, 202, 162)
+    _box(p, W, 30, 48, 36, 58, 206, 166, 126)
+    # Gas block, barrel, and muzzle
+    for i in range(16):
+        bx = 26 - i
+        by = 14 - i * 2
+        if by < 4:
+            break
+        _box(p, W, bx, by, bx + 9, by + 2, 86, 90, 96)
+        _px(p, W, bx + 1, by, 120, 124, 130)
+    _box(p, W, 24, 12, 28, 17, 58, 60, 64)
+    _box(p, W, 12, 4, 18, 10, 52, 54, 58)
+    _px(p, W, 13, 6, 24, 26, 28)
+    _px(p, W, 14, 5, 22, 24, 26)
+    _px(p, W, 14, 7, 22, 24, 26)
+    # Front and rear sights
+    _box(p, W, 18, 8, 21, 13, 146, 150, 158)
+    _box(p, W, 48, 26, 53, 31, 146, 150, 158)
+    _px(p, W, 49, 27, 176, 180, 188)
     return _make_png(W, H, bytes(p))
 
 
@@ -1271,6 +1246,11 @@ KEY = PrefabCharacter(
     idle=PrefabSprite(data_uri=_gen_item_key(), width=32, height=32),
 )
 """Key item sprite."""
+
+MEDKIT = PrefabCharacter(
+    idle=PrefabSprite(data_uri=_gen_item_medkit(), width=32, height=32),
+)
+"""Health pack item sprite (restores health on pickup)."""
 
 
 BAT = PrefabCharacter(

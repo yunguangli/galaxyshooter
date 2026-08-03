@@ -72,6 +72,7 @@ ceiling colour, hiding the draw-distance cut-off and adding atmosphere.
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import math
 from dataclasses import dataclass
@@ -216,6 +217,12 @@ class RaycastCanvas:
         tall/overhead feel.  Affects sprite vertical positioning:
         ground sprites (``z=0``) have their feet at
         ``half_h + camera_height * sprite_base``.
+    renderer
+        Rendering backend for walls/floor/ceiling. ``"canvas"`` keeps the
+        existing ``flet.canvas.Canvas`` wall-strip renderer. ``"rawimage"``
+        streams a pixel frame through ``ft.RawImage``. ``"auto"`` selects
+        ``RawImage`` when available, otherwise falls back to ``"canvas"``.
+        Sprite billboards remain regular Flet controls in all modes.
     """
 
     def __init__(
@@ -233,6 +240,7 @@ class RaycastCanvas:
         max_sprites: int = 32,
         wall_textures: Optional[list] = None,
         camera_height: float = 0.5,
+        renderer: str = "canvas",
     ) -> None:
         self._width  = float(width)
         self._height = float(height)
@@ -248,6 +256,7 @@ class RaycastCanvas:
         self._fog    = fog_distance
         self._depth  = max_depth
         self._cam_h  = camera_height
+        self._renderer = self._resolve_renderer(renderer)
 
         # Sprite list — populated via set_sprites().  Each item is a SpriteDef.
         self._sprites: list[SpriteDef] = []
@@ -281,10 +290,11 @@ class RaycastCanvas:
 
         # Pre-computed ray direction table — one entry per column.
         # Recalculated when columns or fov changes.  Each entry is
-        # (ray_angle_delta_from_center, cos_component, sin_component) but
-        # we only store the delta; cos/sin are computed from the player
-        # angle at render time via a cheap incremental trick.
-        self._ray_table: list[float] = []
+        # (cos_delta, sin_delta) for the column's angle offset from the
+        # camera centre; at render time the ray direction is derived from
+        # the player angle via the sum-of-angles formulas, so only two
+        # trig calls are needed per frame instead of two per column.
+        self._ray_table: list[tuple[float, float]] = []
         self._build_ray_table()
 
         # Persistent shapes list — rebuilt only when column count changes.
@@ -294,17 +304,74 @@ class RaycastCanvas:
         # Per-column perpendicular wall distances (filled each frame).
         self._col_dists: list[float] = [0.0] * self._cols
 
+        # RawImage streaming state (used only by the optional rawimage backend).
+        self._raw_image = None
+        self._raw_frame_task: asyncio.Task | None = None
+        self._raw_pending_frame: bytes | None = None
+        self._raw_frame_width = self._cols
+        self._raw_frame_height = max(1, int(self._height))
+        self._raw_base_frame = b""
+        # Camera key of the last built wall frame.  When the camera has not
+        # moved, the previous frame is pixel-identical, so the expensive
+        # per-column build AND the RawImage push (a client round-trip) are
+        # skipped entirely.  Invalidated whenever columns/fov/template change.
+        self._raw_last_key: tuple[float, float, float] | None = None
+        # Bytes of the last frame handed to the RawImage channel — used to
+        # avoid pushing duplicate frames when the camera moved but the wall
+        # strips happened to be unchanged.
+        self._raw_last_sent: bytes | None = None
+        # Set when the Dart-side data channel dies (e.g. widget disposed by a
+        # scene transition).  Frames are then dropped until the client
+        # remounts the RawImage and opens a fresh channel (see the
+        # on_data_channel_open wrapper below).
+        self._raw_channel_dead = False
+        # Set while a push attempt failed without an ACK (channel not yet
+        # open, timed out, disposed...).  The retry loop re-sends the last
+        # frame until one lands; cleared on the first successful push.  This
+        # survives the on_data_channel_open wrapper clearing _raw_channel_dead
+        # below, so a frame that failed before the channel opened is still
+        # re-sent afterwards.
+        self._raw_retry_needed = False
+        # Optional cap on how many frames per second are pushed to the
+        # client (0 = unlimited).  Each push is a PNG encode + upload + ACK
+        # round-trip on the client side; capping it (e.g. 30 Hz on phones)
+        # halves that work while the walls still update smoothly.
+        self.max_push_rate: float = 0.0
+        self._raw_last_push: float = 0.0
+        self._rebuild_raw_frame_template()
+
         # Static background: ceiling top-half, floor bottom-half.
         half = self._height / 2
-        bg = ft.Stack(
-            width=self._width,
-            height=self._height,
-            controls=[
-                ft.Container(width=self._width, height=half, bgcolor=self._ceil),
-                ft.Container(top=half, width=self._width, height=half,
-                             bgcolor=self._floor),
-            ],
-        )
+        if self._renderer == "rawimage":
+            bg = None
+            self._raw_image = ft.RawImage(
+                width=self._width,
+                height=self._height,
+                fit=ft.BoxFit.FILL,
+                filter_quality=ft.FilterQuality.NONE,
+            )
+            # A fresh channel means the client remounted the widget after a
+            # scene transition — resume streaming.  Always run Flet's own
+            # handler first so the channel capture and pending-ack replay
+            # still happen.
+            _open = self._raw_image.on_data_channel_open
+
+            def _on_channel_open(e, _capture=_open):
+                self._raw_channel_dead = False
+                if _capture is not None:
+                    _capture(e)
+
+            self._raw_image.on_data_channel_open = _on_channel_open
+        else:
+            bg = ft.Stack(
+                width=self._width,
+                height=self._height,
+                controls=[
+                    ft.Container(width=self._width, height=half, bgcolor=self._ceil),
+                    ft.Container(top=half, width=self._width, height=half,
+                                 bgcolor=self._floor),
+                ],
+            )
 
         # Overlay canvas — only wall strips + shadows; redrawn every frame.
         self._cv = cv.Canvas(
@@ -363,12 +430,211 @@ class RaycastCanvas:
         self._used_seg_images = 0
 
         # Public control: Stack(background, canvas, sprite images, segment images).
+        controls: list[ft.Control] = [self._cv, *self._sprite_images, *self._seg_slots]
+        if self._raw_image is not None:
+            controls.insert(0, self._raw_image)
+        elif bg is not None:
+            controls.insert(0, bg)
         self._ctrl = ft.Stack(
             width=self._width,
             height=self._height,
-            controls=[bg, self._cv, *self._sprite_images, *self._seg_slots],
+            controls=controls,
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
         )
+
+    def _resolve_renderer(self, renderer: str) -> str:
+        mode = (renderer or "canvas").strip().lower()
+        if mode not in {"canvas", "rawimage", "auto"}:
+            raise ValueError("renderer must be 'canvas', 'rawimage', or 'auto'")
+        if mode == "auto":
+            return "rawimage" if hasattr(ft, "RawImage") else "canvas"
+        if mode == "rawimage" and not hasattr(ft, "RawImage"):
+            return "canvas"
+        return mode
+
+    def _rebuild_raw_frame_template(self) -> None:
+        width = max(1, self._cols)
+        height = max(1, int(self._height))
+        ceil_rgba = bytes((*_parse(self._ceil), 255))
+        floor_rgba = bytes((*_parse(self._floor), 255))
+        ceil_row = ceil_rgba * width
+        floor_row = floor_rgba * width
+        half_h = height // 2
+        self._raw_frame_width = width
+        self._raw_frame_height = height
+        self._raw_base_frame = b"".join([
+            ceil_row for _ in range(half_h)
+        ] + [
+            floor_row for _ in range(height - half_h)
+        ])
+        # A new template invalidates any cached camera frame.
+        self._raw_last_key = None
+
+    def _schedule_raw_frame(self, frame: bytes) -> None:
+        if self._raw_image is None:
+            return
+        # The Dart-side channel is dead (scene transition, disposed widget,
+        # or a startup timeout).  Keep the newest frame pending so the
+        # retry loop below can re-send it the moment the channel recovers —
+        # do NOT drop it, or a static camera would never get walls back.
+        if self._raw_channel_dead:
+            self._raw_last_sent = frame
+            self._raw_pending_frame = frame
+            if self._raw_frame_task is not None and not self._raw_frame_task.done():
+                return
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return
+            self._raw_frame_task = loop.create_task(self._raw_render_loop())
+            return
+        # Skip byte-identical frames — the client is already showing this
+        # exact image, and every push is an ACK round-trip through the
+        # (sometimes saturated) data channel.
+        if frame == self._raw_last_sent:
+            return
+        self._raw_last_sent = frame
+        self._raw_pending_frame = frame
+        if self._raw_frame_task is not None and not self._raw_frame_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._raw_frame_task = loop.create_task(self._raw_render_loop())
+
+    async def _raw_render_loop(self) -> None:
+        import time as _time
+
+        # Self-healing push loop: pops the newest pending frame (or, while
+        # the channel is dead, re-sends the latest frame) and retries with a
+        # backoff instead of giving up.  This makes startup robust: the
+        # first push often races the client's channel opening — if the
+        # ready/ack timeout expires, the loop just tries again until the
+        # client accepts a frame, so a static camera never stays blank.
+        while self._raw_image is not None:
+            if self._raw_pending_frame is not None:
+                frame = self._raw_pending_frame
+                self._raw_pending_frame = None
+                self._raw_last_sent = frame
+            elif self._raw_retry_needed and self._raw_last_sent is not None:
+                # A previous push failed without an ACK — re-send the last
+                # frame until the client accepts it (e.g. the very first
+                # frame racing the channel opening at startup).
+                frame = self._raw_last_sent
+            else:
+                return
+
+            rate = self.max_push_rate
+            if rate > 0:
+                interval = 1.0 / rate
+                wait = interval - (_time.monotonic() - self._raw_last_push)
+                if wait > 0:
+                    await asyncio.sleep(wait)
+            try:
+                self._raw_last_push = _time.monotonic()
+                await self._raw_image.render_rgba(
+                    width=self._raw_frame_width,
+                    height=self._raw_frame_height,
+                    pixels=frame,
+                    premultiplied=True,
+                )
+                self._raw_retry_needed = False
+                self._raw_channel_dead = False
+            except (TimeoutError, asyncio.TimeoutError, RuntimeError):
+                # Channel dead, not yet open, or the client never acked.
+                self._raw_retry_needed = True
+                self._raw_channel_dead = True
+                await asyncio.sleep(0.5)
+            except Exception:
+                self._raw_retry_needed = True
+                self._raw_channel_dead = True
+                await asyncio.sleep(0.5)
+
+    def _render_wall_frame(
+        self,
+        px: float,
+        py: float,
+        angle: float,
+        col_w: float,
+        half_fov: float,
+        lut: list[list[str]] | None,
+    ) -> None:
+        # Camera did not move — the previous frame is pixel-identical, so
+        # skip the per-column build and the RawImage push entirely.  The
+        # per-column distances (_col_dists) are still valid for sprite
+        # occlusion.  The key is invalidated on columns/fov/template change.
+        key = (px, py, angle)
+        if key == self._raw_last_key:
+            return
+        self._raw_last_key = key
+
+        frame = bytearray(self._raw_base_frame)
+        textures = self._wall_textures
+        height = self._raw_frame_height
+        width = self._raw_frame_width
+        stride = width * 4
+        table = self._ray_table
+        _cast = self._cast
+        _cols = self._cols
+        col_dists = self._col_dists
+        fog = self._fog
+        ceil = self._ceil
+        wcolors = self._wcolors
+        wcolors_dark = self._wcolors_dark
+        fog_steps = _FOG_STEPS
+        h = self._height
+        n_colors = len(wcolors)
+        cos_a = math.cos(angle)
+        sin_a = math.sin(angle)
+        for col in range(_cols):
+            cd, sd = table[col]
+            rdx = cos_a * cd - sin_a * sd
+            rdy = sin_a * cd + cos_a * sd
+            dist, wtype, side, wall_hit = _cast(px, py, rdx, rdy)
+            col_dists[col] = dist
+
+            strip_h = min(h, h / max(dist, 0.001))
+            strip_y = (h - strip_h) / 2.0
+            idx = wtype - 1
+            if idx < 0:
+                idx = 0
+            elif idx >= n_colors:
+                idx = n_colors - 1
+
+            if textures is not None and idx < len(textures) and textures[idx] is not None:
+                color = textures[idx].sample(wall_hit)[side]
+                if lut is not None:
+                    step = min(fog_steps, int(dist * fog_steps / fog))
+                    color = _blend(color, ceil, step / fog_steps)
+            elif lut is not None:
+                lut_idx = idx * 2 + side
+                step = min(fog_steps, int(dist * fog_steps / fog))
+                color = lut[lut_idx][step]
+            else:
+                color = wcolors[idx] if side == 0 else wcolors_dark[idx]
+
+            # Cached RGBA bytes — no per-column hex parse / tuple / bytes
+            # allocation in the hot loop.
+            rgba = _rgba(color)
+            y0 = int(strip_y)
+            if y0 < 0:
+                y0 = 0
+            y1 = int(strip_y + strip_h + 1)
+            if y1 > height:
+                y1 = height
+            if y1 > y0:
+                # Vertical fill via four channel-wise extended slice
+                # assignments — C-speed instead of one Python write per
+                # row.  Pixel-identical to the old per-row loop.
+                a = y0 * stride + col * 4
+                b = y1 * stride + col * 4
+                frame[a:b:stride] = bytes((rgba[0],)) * (y1 - y0)
+                frame[a + 1:b + 1:stride] = bytes((rgba[1],)) * (y1 - y0)
+                frame[a + 2:b + 2:stride] = bytes((rgba[2],)) * (y1 - y0)
+                frame[a + 3:b + 3:stride] = bytes((rgba[3],)) * (y1 - y0)
+
+        self._schedule_raw_frame(bytes(frame))
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -376,6 +642,11 @@ class RaycastCanvas:
     def control(self) -> ft.Stack:
         """``ft.Stack`` to pass to ``scene.add(rc.control)``."""
         return self._ctrl
+
+    @property
+    def renderer(self) -> str:
+        """Selected wall rendering backend: ``canvas`` or ``rawimage``."""
+        return self._renderer
 
     def set_sprites(self, sprites: Optional[list[SpriteDef]] = None) -> None:
         """Replace the sprite list for this frame.
@@ -394,6 +665,27 @@ class RaycastCanvas:
             rc.render(px, py, angle)
         """
         self._sprites = sprites if sprites is not None else []
+
+    def clear_frame(self) -> None:
+        """Blank the view: push one opaque black frame and hide sprites.
+
+        Used when gameplay ends (death / level complete) so the viewport
+        shows a clean black screen instead of a frozen frame — a stale
+        last-render of fog-blended walls reads as a dark-orange tint on
+        screen.  The next ``render()`` call resumes normal frames.
+        """
+        self._raw_last_key = None
+        self._sprites = []
+        for i in range(self._used_sprite_images):
+            self._sprite_images[i].visible = False
+        for i in range(self._used_seg_images):
+            self._seg_slots[i].visible = False
+            self._seg_images[i].visible = False
+        self._used_sprite_images = 0
+        self._used_seg_images = 0
+        if self._raw_image is not None:
+            n = self._raw_frame_width * self._raw_frame_height
+            self._schedule_raw_frame(b"\x00\x00\x00\xff" * n)
 
     @property
     def map_data(self) -> list[list[int]]:
@@ -416,6 +708,8 @@ class RaycastCanvas:
         self._cols = max(1, value)
         self._init_wall_shapes()
         self._build_ray_table()
+        self._col_dists = [0.0] * self._cols
+        self._rebuild_raw_frame_template()
 
     @property
     def fov(self) -> float:
@@ -424,7 +718,10 @@ class RaycastCanvas:
 
     @fov.setter
     def fov(self, degrees: float) -> None:
-        self._fov = math.radians(float(degrees))
+        radians = math.radians(float(degrees))
+        if math.isclose(self._fov, radians, rel_tol=0.0, abs_tol=1e-9):
+            return
+        self._fov = radians
         self._half_fov = self._fov / 2.0
         self._build_ray_table()
 
@@ -440,13 +737,18 @@ class RaycastCanvas:
         self._shapes = list(self._wall_shapes)
 
     def _build_ray_table(self) -> None:
-        """Pre-compute the angular offset for each column relative to the
-        centre of the FOV.  Stored once and reused every frame — avoids
-        ``col / divisor * fov`` arithmetic in the hot loop."""
+        """Pre-compute each column's angle offset from the FOV centre and its
+        (cos, sin) — reused every frame so the render loop needs only two
+        trig calls per frame instead of two per column.  Rebuilding the
+        table invalidates any cached RawImage frame (columns/fov changed)."""
         divisor = max(1, self._cols - 1)
+        half_fov = self._half_fov
         self._ray_table = [
-            (col / divisor) * self._fov for col in range(self._cols)
+            (math.cos((col / divisor) * self._fov - half_fov),
+             math.sin((col / divisor) * self._fov - half_fov))
+            for col in range(self._cols)
         ]
+        self._raw_last_key = None
 
     def _build_fog_lut(self) -> None:
         """Pre-compute fog-blended colours for every wall-colour variant at
@@ -484,38 +786,47 @@ class RaycastCanvas:
         lut      = self._fog_lut
 
         # ── Wall columns ──────────────────────────────────────────────────────
-        textures = self._wall_textures
-        for col in range(self._cols):
-            ray_a = angle - half_fov + self._ray_table[col]
-            dist, wtype, side, wall_hit = self._cast(px, py, ray_a)
-            self._col_dists[col] = dist
+        if self._renderer == "rawimage":
+            self._render_wall_frame(px, py, angle, col_w, half_fov, lut)
+        else:
+            textures = self._wall_textures
+            table = self._ray_table
+            _cast = self._cast
+            cos_a = math.cos(angle)
+            sin_a = math.sin(angle)
+            for col in range(self._cols):
+                cd, sd = table[col]
+                rdx = cos_a * cd - sin_a * sd
+                rdy = sin_a * cd + cos_a * sd
+                dist, wtype, side, wall_hit = _cast(px, py, rdx, rdy)
+                self._col_dists[col] = dist
 
-            strip_h = min(self._height, self._height / max(dist, 0.001))
-            strip_y = (self._height - strip_h) / 2.0
-            strip_x = col * col_w
+                strip_h = min(self._height, self._height / max(dist, 0.001))
+                strip_y = (self._height - strip_h) / 2.0
+                strip_x = col * col_w
 
-            idx = max(0, min(wtype - 1, len(self._wcolors) - 1))
+                idx = max(0, min(wtype - 1, len(self._wcolors) - 1))
 
-            # Texture sampling: use texture strips if available for this type.
-            if textures is not None and idx < len(textures) and textures[idx] is not None:
-                color = textures[idx].sample(wall_hit)[side]
-                # Apply fog to textured walls: blend toward ceiling colour.
-                if lut is not None:
+                # Texture sampling: use texture strips if available for this type.
+                if textures is not None and idx < len(textures) and textures[idx] is not None:
+                    color = textures[idx].sample(wall_hit)[side]
+                    # Apply fog to textured walls: blend toward ceiling colour.
+                    if lut is not None:
+                        step = min(_FOG_STEPS, int(dist * _FOG_STEPS / self._fog))
+                        color = _blend(color, self._ceil, step / _FOG_STEPS)
+                elif lut is not None:
+                    lut_idx = idx * 2 + side
                     step = min(_FOG_STEPS, int(dist * _FOG_STEPS / self._fog))
-                    color = _blend(color, self._ceil, step / _FOG_STEPS)
-            elif lut is not None:
-                lut_idx = idx * 2 + side
-                step = min(_FOG_STEPS, int(dist * _FOG_STEPS / self._fog))
-                color = lut[lut_idx][step]
-            else:
-                color = self._wcolors[idx] if side == 0 else self._wcolors_dark[idx]
+                    color = lut[lut_idx][step]
+                else:
+                    color = self._wcolors[idx] if side == 0 else self._wcolors_dark[idx]
 
-            r = self._wall_shapes[col]
-            r.x      = strip_x
-            r.y      = strip_y
-            r.width  = col_w + 1
-            r.height = strip_h
-            self._wall_paints[col].color = color
+                r = self._wall_shapes[col]
+                r.x      = strip_x
+                r.y      = strip_y
+                r.width  = col_w + 1
+                r.height = strip_h
+                self._wall_paints[col].color = color
 
         # ── Sprite rendering (billboard sprites, depth-sorted back-to-front) ──
 
@@ -699,11 +1010,15 @@ class RaycastCanvas:
         # Mutate the persistent shapes list in-place for the shadow range,
         # then set it on the canvas.  No new list objects created per frame.
         shadow_end = used_shadows if used_shadows > 0 else 0
-        self._shapes[self._cols:self._cols + shadow_end] = (
-            self._shadow_shapes[:used_shadows]
-        )
-        # Trim any leftover shadows from a previous frame
-        del self._shapes[self._cols + shadow_end:]
+        if self._renderer == "rawimage":
+            self._shapes[:shadow_end] = self._shadow_shapes[:used_shadows]
+            del self._shapes[shadow_end:]
+        else:
+            self._shapes[self._cols:self._cols + shadow_end] = (
+                self._shadow_shapes[:used_shadows]
+            )
+            # Trim any leftover shadows from a previous frame
+            del self._shapes[self._cols + shadow_end:]
         self._used_sprite_images = used_images
         self._used_seg_images = used_segs
         self._cv.shapes = self._shapes
@@ -714,9 +1029,14 @@ class RaycastCanvas:
     # ── DDA Raycasting ─────────────────────────────────────────────────────────
 
     def _cast(
-        self, px: float, py: float, angle: float
+        self, px: float, py: float, rdx: float, rdy: float
     ) -> tuple[float, int, int, float]:
         """Cast a single ray using DDA.
+
+        ``rdx``/``rdy`` are the precomputed ray direction (unit vector) —
+        pass ``(math.cos(a), math.sin(a))`` from the render loop, which
+        derives them from the precomputed ray table (two trig calls per
+        frame total).
 
         Returns ``(perp_distance, wall_type, side, wall_hit)``.
 
@@ -725,9 +1045,6 @@ class RaycastCanvas:
         ``wall_hit``: fractional position along the wall face (0.0–1.0),
             used as the texture U coordinate.
         """
-        rdx = math.cos(angle)
-        rdy = math.sin(angle)
-
         mx = int(px)
         my = int(py)
 
@@ -780,10 +1097,10 @@ class RaycastCanvas:
         # Compute texture U coordinate (fractional position along wall face).
         if side == 0:
             # X-face hit (vertical wall) — U is based on Y position.
-            wall_hit = (py + perp * rdy / max(abs(rdx), 1e-30)) % 1.0
+            wall_hit = (py + perp * rdy) % 1.0
         else:
             # Y-face hit (horizontal wall) — U is based on X position.
-            wall_hit = (px + perp * rdx / max(abs(rdy), 1e-30)) % 1.0
+            wall_hit = (px + perp * rdx) % 1.0
 
         return (max(0.01, perp), wtype, side, wall_hit)
 
@@ -793,6 +1110,14 @@ class RaycastCanvas:
 def _parse(color: str) -> tuple[int, int, int]:
     c = color.lstrip("#")
     return int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+
+
+@functools.lru_cache(maxsize=1024)
+def _rgba(color: str) -> bytes:
+    """RGBA8888 bytes for a hex colour — cached so the RawImage wall-frame
+    hot loop never re-parses or re-allocates per column."""
+    r, g, b = _parse(color)
+    return bytes((r, g, b, 255))
 
 
 def _to_hex(r: int, g: int, b: int) -> str:

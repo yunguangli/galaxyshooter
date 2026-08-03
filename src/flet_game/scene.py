@@ -1,4 +1,4 @@
-"""
+﻿"""
 scene.py — Scene: canvas container and object manager for flet_game.
 
 ``Scene`` owns a ``ft.Stack`` canvas and an ``InputManager``, manages the
@@ -176,6 +176,12 @@ class Scene:
             ),
         )
 
+        # KeyboardListener wraps the root stack so the scene receives
+        # keyboard events.  Scene inserts this control into the page's
+        # widget tree via _build_mount_ctrl().
+        self._kb_listener = self._input.keyboard_listener
+        self._kb_listener.content = self._root
+
         # SafeArea state — stored before _build_mount_ctrl() is called.
         self._sa_enabled = safe_area
         self._sa_top     = safe_area_top
@@ -186,6 +192,37 @@ class Scene:
 
     # ── SafeArea ──────────────────────────────────────────────────────────────
 
+    def resize(self, width: float, height: float) -> None:
+        """Resize the scene's fixed-size layers to a new design size.
+
+        Use from a responsive wrapper (e.g. ``GameView(page_sized=True)``)
+        *before* ``mount()`` so the game canvas and all its stacking layers
+        match the real page size instead of the construction-time default.
+        Object positions built in ``on_enter`` should derive from
+        ``self.width == _width`` / ``self.height == _height`` to stay aligned.
+        """
+        width, height = float(width), float(height)
+        if (width, height) == (self._width, self._height):
+            return
+        self._width, self._height = width, height
+        self._bg.width, self._bg.height = width, height
+        self._canvas.width, self._canvas.height = width, height
+        self._overlay.width, self._overlay.height = width, height
+        self._wrapped.width, self._wrapped.height = width, height
+        self._wrapped.left = 0.0
+        self._wrapped.top = 0.0
+        self._root.width, self._root.height = width, height
+
+    @property
+    def width(self) -> float:
+        """Current design width of the scene."""
+        return self._width
+
+    @property
+    def height(self) -> float:
+        """Current design height of the scene."""
+        return self._height
+
     def _build_mount_ctrl(self) -> None:
         """Build (or rebuild) ``self._mount_ctrl`` — the control added to the page.
 
@@ -194,19 +231,28 @@ class Scene:
         indicator).  Horizontal centering on wide screens is still handled by
         ``page.horizontal_alignment = CENTER`` as before.
 
-        When ``safe_area=False`` (default) ``_mount_ctrl`` is the root stack
-        (input-wrapped canvas + overlay).
+        When ``safe_area=False`` (default) ``_mount_ctrl`` is the
+        KeyboardListener wrapping the root stack.
         """
         if self._sa_enabled:
             self._mount_ctrl: ft.Control = ft.SafeArea(
-                content=self._root,
+                content=self._kb_listener,
                 avoid_intrusions_top=self._sa_top,
                 avoid_intrusions_bottom=self._sa_bottom,
                 avoid_intrusions_left=self._sa_left,
                 avoid_intrusions_right=self._sa_right,
             )
         else:
-            self._mount_ctrl = self._root
+            # Deterministic centring: an expand-fill container with
+            # alignment=CENTER places the fixed-size canvas exactly in the
+            # middle of the page on every device.  (Page-level Column
+            # alignment alone proved to be off-centre by a few px on some
+            # portrait phones while looking fine on wider foldable screens.)
+            self._mount_ctrl = ft.Container(
+                content=self._kb_listener,
+                expand=True,
+                alignment=ft.Alignment.CENTER,
+            )
 
     @property
     def safe_area(self) -> bool:
@@ -279,14 +325,12 @@ class Scene:
         """
         if self._mounted:
             return
-        # Re-register the keyboard handler.  This is necessary when the scene
-        # was instantiated before a previous scene was destroyed — Python
-        # evaluates function arguments before the call, so the new scene's
-        # InputManager may register page.on_keyboard_event only to have it
-        # overwritten moments later by the old scene's inp.destroy().
-        self._input.activate()
         self._page.controls.append(self._mount_ctrl)
         self._page.update()
+        # Re-register the keyboard handler after the listener is attached.
+        # Flet's KeyboardListener.focus() may be async and needs the control
+        # to be mounted before it can claim focus reliably.
+        self._input.activate()
         self._mounted = True
         self.on_enter()
 

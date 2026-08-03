@@ -327,17 +327,26 @@ class GameLoop:
                     # The async flag is computed once at registration time (in
                     # on_update / add_callback) to avoid per-frame reflection.
                     try:
-                        for cb, is_async in self._callbacks:
+                        # Snapshot: callbacks may run_scene() mid-frame, which
+                        # removes the old scene's callbacks and registers the
+                        # new scene's — mutating the list during iteration.
+                        for cb, is_async in list(self._callbacks):
                             if is_async:
                                 await cb(dt)
                             else:
                                 cb(dt)
-                    except AttributeError:
-                        # page.session.connection is None — browser tab closed
-                        # while a callback (e.g. SplashEffect.ring →
-                        # page.run_task) tried to schedule work.
-                        self._running = False
-                        return
+                    except (AttributeError, RuntimeError) as exc:
+                        # Covers both closed-browser and destroyed-session
+                        # (window closed / session torn down mid-callback):
+                        # page.session.connection is None → AttributeError,
+                        # or page.update() raises "destroyed session" (e.g. a
+                        # scene callback flushing its own canvas after close).
+                        if not isinstance(exc, RuntimeError) or (
+                            "destroyed session" in str(exc).lower()
+                        ):
+                            self._running = False
+                            return
+                        raise
                 finally:
                     _batch_depth -= 1
                     # Invalidate the cached timestamp so any is_key_down()

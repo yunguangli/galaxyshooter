@@ -83,6 +83,7 @@ class Button:
         opacity: float = 1.0,
         visible: bool = True,
         on_click: Optional[Callable] = None,
+        tooltip: str = "",
         tag: str = "",
     ) -> None:
         self._tag = tag
@@ -116,6 +117,7 @@ class Button:
             ink=True,                      # Material splash on tap
             content=self._text_ctrl,
             alignment=ft.Alignment.CENTER, # text always centred -- no maths needed
+            tooltip=tooltip,
         )
 
     # ------------------------------------------------------------------

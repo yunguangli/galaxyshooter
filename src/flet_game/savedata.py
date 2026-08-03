@@ -76,9 +76,18 @@ class SaveData:
 
     @staticmethod
     def _default_path(name: str) -> Path:
-        """Return the platform-appropriate save file path."""
-        # Windows: %APPDATA%\flet_game\
-        # macOS / Linux: ~/.local/share/flet_game/
+        """Return the platform-appropriate save file path.
+
+        Priority:
+        1. ``FLET_APP_STORAGE_DATA`` — set by the Flet runtime on Android /
+           iOS / desktop; a *writable* app-specific data dir.  This is what
+           makes ``~``-based paths work on mobile (``~/.local`` is not
+           writable on Android, where HOME is ``/data``).
+        2. Windows ``%APPDATA%``; macOS/Linux ``~/.local/share``.
+        """
+        storage = os.environ.get("FLET_APP_STORAGE_DATA")
+        if storage:
+            return Path(storage) / "flet_game" / f"{name}.json"
         base = (
             os.environ.get("APPDATA")
             or os.path.join(os.path.expanduser("~"), ".local", "share")
@@ -117,13 +126,21 @@ class SaveData:
     def save(self) -> None:
         """Write current data to disk.
 
-        Creates the parent directory if it does not exist.
+        Creates the parent directory if it does not exist.  Storage failures
+        (e.g. restricted storage on a mobile device) are logged and swallowed
+        — the game must never crash just because saving progress failed.
         """
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(
-            json.dumps(self._data, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._path.write_text(
+                json.dumps(self._data, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            try:
+                print(f"[starpusher] SaveData.save failed: {exc}", flush=True)
+            except Exception:
+                pass
 
     def delete_file(self) -> bool:
         """Delete the backing JSON file from disk.

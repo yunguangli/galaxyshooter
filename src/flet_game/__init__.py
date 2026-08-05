@@ -109,7 +109,15 @@ from .camera import Camera
 from .platformer import PlatformerController, PlatformerWorld
 
 # ── Step 11: RaycastCanvas — Wolfenstein-style 3-D raycasting renderer ─────────
-from .raycast import RaycastCanvas, SpriteDef, DEFAULT_MAP, DEFAULT_WALL_COLORS
+from .raycast import (
+    RaycastCanvas,
+    SpriteDef,
+    WallDecal,
+    CeilingLight,
+    FloorBand,
+    DEFAULT_MAP,
+    DEFAULT_WALL_COLORS,
+)
 from .wall_texture import WallTexture
 
 # ── Step 12: VirtualJoystick — dynamic on-screen analogue joystick ───────────
@@ -189,6 +197,9 @@ __all__ = [
     "RaycastCanvas",
     "WallTexture",
     "SpriteDef",
+    "WallDecal",
+    "CeilingLight",
+    "FloorBand",
     "DEFAULT_MAP",
     "DEFAULT_WALL_COLORS",
     # Step 12 — Virtual joystick

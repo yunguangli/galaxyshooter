@@ -79,6 +79,8 @@ class WallTexture:
         self._strips = strips
         self._light: list[str] = []
         self._dark: list[str] = []
+        self._grid_light: Optional[list[list[str]]] = None
+        self._grid_dark: Optional[list[list[str]]] = None
 
     # ── Factory constructors ──────────────────────────────────────────────
 
@@ -135,6 +137,66 @@ class WallTexture:
         return tex
 
     @classmethod
+    def from_grid(
+        cls,
+        rows: list[list[str]],
+        dark: Optional[list[list[str]]] = None,
+        darken_factor: float = 0.65,
+    ) -> "WallTexture":
+        """Create a 2-D tile-grid texture (horizontal + vertical detail).
+
+        Parameters
+        ----------
+        rows : list[list[str]]
+            Top-to-bottom list of rows; each row is a list of hex colour
+            strings, one per vertical strip.  Row count determines the
+            vertical resolution (e.g. 8 rows = 8 tile bands).  All rows
+            must have the same length.
+        dark : list[list[str]] | None
+            Optional dark-side grid.  If ``None``, every light colour is
+            auto-darkened by ``darken_factor``.
+        darken_factor : float
+            Multiplier for auto-generated dark-side colours.
+
+        The 1-D strip arrays (``sample(u)``) are filled with each strip's
+        vertical average so the canvas backend (vertical strips only)
+        degrades gracefully.
+
+        Returns
+        -------
+        WallTexture
+        """
+        n_rows = len(rows)
+        n_strips = len(rows[0])
+        tex = cls(strips=n_strips)
+        tex._grid_light = [list(r) for r in rows]
+        if dark is not None:
+            tex._grid_dark = [list(r) for r in dark]
+        else:
+            tex._grid_dark = [
+                [_darken(c, darken_factor) for c in r] for r in rows
+            ]
+        avg_light = []
+        avg_dark = []
+        for s in range(n_strips):
+            lr = lb = lg = 0
+            dr = db = dg = 0
+            for r in range(n_rows):
+                pr, pg, pb = _parse_hex(rows[r][s])
+                lr += pr
+                lg += pg
+                lb += pb
+                qr, qg, qb = _parse_hex(tex._grid_dark[r][s])
+                dr += qr
+                dg += qg
+                db += qb
+            avg_light.append(_to_hex(lr // n_rows, lg // n_rows, lb // n_rows))
+            avg_dark.append(_to_hex(dr // n_rows, dg // n_rows, db // n_rows))
+        tex._light = avg_light
+        tex._dark = avg_dark
+        return tex
+
+    @classmethod
     def from_image(
         cls,
         path: str,
@@ -181,7 +243,38 @@ class WallTexture:
         light = [_to_hex(r, g, b) for r, g, b in pixels]
         return cls.from_colors(light, darken_factor=darken_factor)
 
-    # ── Sampling ─────────────────────────────────────────────────────────
+    # ── Sampling ────────────────────────────────────────────────────────
+
+    @property
+    def has_grid(self) -> bool:
+        """True when this texture carries a 2-D tile grid (see ``from_grid``)."""
+        return self._grid_light is not None
+
+    @property
+    def grid_light(self) -> Optional[list[list[str]]]:
+        """Top-to-bottom rows of light-side hex colours, or ``None``."""
+        return self._grid_light
+
+    @property
+    def grid_dark(self) -> Optional[list[list[str]]]:
+        """Top-to-bottom rows of dark-side hex colours, or ``None``."""
+        return self._grid_dark
+
+    def sample_uv(self, u: float, v: float) -> tuple[str, str]:
+        """Return ``(light_color, dark_color)`` for texture coords (u, v).
+
+        ``u`` is horizontal 0.0–1.0, ``v`` is vertical 0.0 (top) – 1.0
+        (bottom).  Falls back to ``sample(u)`` when the texture has no
+        2-D grid.
+        """
+        if self._grid_light is None or self._grid_dark is None:
+            return self.sample(u)
+        rows = len(self._grid_light)
+        r = min(int(v * rows), rows - 1)
+        r = max(0, r)
+        c = min(int(u * self._strips), self._strips - 1)
+        c = max(0, c)
+        return self._grid_light[r][c], self._grid_dark[r][c]
 
     def sample(self, u: float) -> tuple[str, str]:
         """Return ``(light_color, dark_color)`` for a U coordinate in 0.0–1.0.

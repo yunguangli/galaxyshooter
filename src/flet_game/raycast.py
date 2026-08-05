@@ -75,6 +75,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import math
+import time as _time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -171,6 +172,106 @@ class SpriteDef:
     floor_offset: float = 0.0
 
 
+@dataclass
+class WallDecal:
+    """A wall-mounted decal that renders flush against a wall face.
+
+    Unlike billboard sprites that always face the camera, wall decals are
+    rendered flat against the wall surface.  This makes them ideal for
+    posters, frames, signs, fire extinguisher boxes, and other objects
+    that should appear attached to walls.
+
+    Attributes
+    ----------
+    x : float
+        World X position (map units) — center of the decal.
+    y : float
+        World Y position (map units) — center of the decal.
+    face : int
+        Wall face direction: 0=north (−Y), 1=south (+Y),
+        2=east (+X), 3=west (−X).
+    color : str
+        Hex colour string for the decal.  Use a frame border colour for
+        frames, or any colour for solid wall-mounted objects.
+    width : float
+        Width in world units (default 0.5).  Should be ≤ 1.0 to fit
+        on a single wall face.
+    height : float
+        Height in world units (default 0.5).  Use 0.5 for half-height
+        frames, 1.0 for full-height.
+    v_offset : float
+        Vertical offset from wall center (default 0.0 = centered).
+        Positive values move the decal DOWN.  Use 0.0 for vertically
+        centered, or adjust for top/bottom alignment.
+    """
+    x: float
+    y: float
+    face: int  # 0=north, 1=south, 2=east, 3=west
+    color: str
+    width: float = 0.5
+    height: float = 0.5
+    v_offset: float = 0.0
+
+
+@dataclass
+class FloorBand:
+    """A thin coloured line lying flat on the floor along a vertical plane.
+
+    Rendered directly into the RawImage framebuffer (rawimage backend only)
+    as a per-column single pixel row, so it is atomic with the walls — no
+    overlay control, no desync flicker.  Used for yellow platform safety
+    lines etc.
+
+    Attributes
+    ----------
+    x : float
+        World X of the vertical plane the line lies on (the line runs along
+        the Y axis at this X).
+    color : str
+        Hex colour string for the line.
+    y0, y1 : float
+        World-Y range the line spans along the plane (default full map).
+    """
+
+    x: float
+    color: str
+    y0: float = 0.0
+    y1: float = 1e9
+
+
+@dataclass
+class CeilingLight:
+    """A flat luminous capsule hanging from the ceiling along a vertical plane.
+
+    Rendered directly into the RawImage framebuffer (rawimage backend only)
+    as a ceiling band, fog-faded by distance.  Atomic with the walls, so it
+    never flickers against them.
+
+    Attributes
+    ----------
+    x : float
+        World X of the vertical plane the light lies on (the light runs
+        along the Y axis at this X).
+    y : float
+        World Y of the light centre.
+    z : float
+        Height above the floor in map units (default 0.88 ≈ near ceiling).
+    half_len : float
+        Half-length of the light along the Y axis (world units).
+    thickness : float
+        Vertical height of the light capsule (world units).
+    color : str
+        Hex colour string for the lit surface.
+    """
+
+    x: float
+    y: float
+    z: float = 0.88
+    half_len: float = 0.2
+    thickness: float = 0.08
+    color: str = "#fff8e0"
+
+
 class RaycastCanvas:
     """Wolfenstein-style raycasting 3D renderer backed by ``flet.canvas.Canvas``.
 
@@ -260,6 +361,25 @@ class RaycastCanvas:
 
         # Sprite list — populated via set_sprites().  Each item is a SpriteDef.
         self._sprites: list[SpriteDef] = []
+        # Identity of the last sprite list handed to render().  The static-
+        # camera skip in render() is only taken when it is unchanged too, so
+        # engine callers who move sprites while the camera stands still still
+        # get their sprites updated.
+        self._sprites_key: object = None
+
+        # Wall decal list — populated via set_wall_decals().  Each item is a WallDecal.
+        self._wall_decals: list[WallDecal] = []
+
+        # Flat floor decor (safety lines) + ceiling lights — rawimage only,
+        # rasterized into the framebuffer so they are atomic with the walls.
+        self._floor_bands: list[FloorBand] = []
+        self._ceiling_lights: list[CeilingLight] = []
+        self._floor_fog: list[tuple[bytes, ...]] = []
+        self._light_fog: list[tuple[bytes, ...]] = []
+
+        # Frame-phase timings (exposed for the on-device diagnostics HUD).
+        self._dbg_wall_ms: float = 0.0
+        self._dbg_sprite_ms: float = 0.0
 
         # Pre-darken each wall colour for Y-side (EW) faces.
         self._wcolors_dark = [_darken(c, 0.65) for c in self._wcolors]
@@ -287,6 +407,19 @@ class RaycastCanvas:
         # Pre-computed fog colour LUT (None when fog is disabled).
         self._fog_lut: list[list[str]] | None = None
         self._build_fog_lut()
+
+        # Pre-baked RGBA byte tables for 2-D grid textures (rawimage only).
+        self._grid_lut: list | None = None
+        self._build_grid_lut()
+
+        # O(1) wall-decal lookup + per-decal fog RGBA tables, rebuilt by
+        # set_wall_decals().
+        self._decal_index: dict[tuple[int, int], list[int]] = {}
+        self._decal_fog: list[tuple[bytes, ...]] = []
+        # Cheap per-column gate: does the (side, plane) this column hit have
+        # any decal at all?  Avoids the _decals_at_wall() call for the ~90% of
+        # columns with no decal.
+        self._decal_plane_keys: set = set()
 
         # Pre-computed ray direction table — one entry per column.
         # Recalculated when columns or fov changes.  Each entry is
@@ -571,6 +704,7 @@ class RaycastCanvas:
 
         frame = bytearray(self._raw_base_frame)
         textures = self._wall_textures
+        grid_tables = self._grid_lut
         height = self._raw_frame_height
         width = self._raw_frame_width
         stride = width * 4
@@ -587,6 +721,27 @@ class RaycastCanvas:
         n_colors = len(wcolors)
         cos_a = math.cos(angle)
         sin_a = math.sin(angle)
+        half_h = self._height / 2.0
+        cam_h = self._cam_h
+
+        # Floor decor (safety lines) + ceiling lights, grouped by their X
+        # plane so each distinct plane needs only one ray-plane intersection
+        # per column.
+        bands = self._floor_bands
+        lights = self._ceiling_lights
+        floor_by_plane: dict = {}
+        if bands:
+            for _bi, _b in enumerate(bands):
+                floor_by_plane.setdefault(_b.x, []).append(_bi)
+        light_by_plane: dict = {}
+        if lights:
+            for _li, _l in enumerate(lights):
+                light_by_plane.setdefault(_l.x, []).append(_li)
+        decor_planes = sorted(floor_by_plane.keys() | light_by_plane.keys())
+        floor_fog = self._floor_fog
+        light_fog = self._light_fog
+        decal_plane_keys = self._decal_plane_keys
+
         for col in range(_cols):
             cd, sd = table[col]
             rdx = cos_a * cd - sin_a * sd
@@ -602,37 +757,207 @@ class RaycastCanvas:
             elif idx >= n_colors:
                 idx = n_colors - 1
 
-            if textures is not None and idx < len(textures) and textures[idx] is not None:
+            step = 0
+            if lut is not None:
+                step = min(fog_steps, int(dist * fog_steps / fog))
+
+            grid_entry = None
+            if grid_tables is not None and idx < len(grid_tables):
+                grid_entry = grid_tables[idx]
+
+            if grid_entry is not None:
+                # 2-D grid texture — one span per run-length colour span,
+                # each filled with the C-speed extended-slice trick.  All
+                # colours come from the pre-baked init-time LUT.
+                if strip_h < 24.0:
+                    # Distant wall — bands are sub-pixel; single fill with
+                    # the strip's vertical average colour.
+                    rgba = grid_entry[2][side][min(int(wall_hit * len(grid_entry[2][0])), len(grid_entry[2][0]) - 1)][step]
+                    y0 = int(strip_y)
+                    if y0 < 0:
+                        y0 = 0
+                    y1 = int(strip_y + strip_h + 1)
+                    if y1 > height:
+                        y1 = height
+                    if y1 > y0:
+                        a = y0 * stride + col * 4
+                        b = y1 * stride + col * 4
+                        n = y1 - y0
+                        frame[a:b:stride] = rgba[0:1] * n
+                        frame[a + 1:b + 1:stride] = rgba[1:2] * n
+                        frame[a + 2:b + 2:stride] = rgba[2:3] * n
+                        frame[a + 3:b + 3:stride] = rgba[3:4] * n
+                else:
+                    runs_by_u, steps = grid_entry[0] if side == 0 else grid_entry[1]
+                    n_strips_t = grid_entry[4]
+                    u_idx = int(wall_hit * n_strips_t)
+                    if u_idx < 0:
+                        u_idx = 0
+                    elif u_idx >= n_strips_t:
+                        u_idx = n_strips_t - 1
+                    band_h = strip_h / grid_entry[3]
+                    for r0, r1, cidx in runs_by_u[u_idx]:
+                        by0 = int(strip_y + r0 * band_h)
+                        by1 = int(strip_y + (r1 + 1) * band_h) + 1
+                        if by0 < 0:
+                            by0 = 0
+                        if by1 > height:
+                            by1 = height
+                        if by1 <= by0:
+                            continue
+                        rgba = steps[cidx][step]
+                        a = by0 * stride + col * 4
+                        b = by1 * stride + col * 4
+                        n = by1 - by0
+                        frame[a:b:stride] = rgba[0:1] * n
+                        frame[a + 1:b + 1:stride] = rgba[1:2] * n
+                        frame[a + 2:b + 2:stride] = rgba[2:3] * n
+                        frame[a + 3:b + 3:stride] = rgba[3:4] * n
+            elif textures is not None and idx < len(textures) and textures[idx] is not None:
                 color = textures[idx].sample(wall_hit)[side]
                 if lut is not None:
-                    step = min(fog_steps, int(dist * fog_steps / fog))
                     color = _blend(color, ceil, step / fog_steps)
+                rgba = _rgba(color)
+                y0 = int(strip_y)
+                if y0 < 0:
+                    y0 = 0
+                y1 = int(strip_y + strip_h + 1)
+                if y1 > height:
+                    y1 = height
+                if y1 > y0:
+                    a = y0 * stride + col * 4
+                    b = y1 * stride + col * 4
+                    n = y1 - y0
+                    frame[a:b:stride] = rgba[0:1] * n
+                    frame[a + 1:b + 1:stride] = rgba[1:2] * n
+                    frame[a + 2:b + 2:stride] = rgba[2:3] * n
+                    frame[a + 3:b + 3:stride] = rgba[3:4] * n
             elif lut is not None:
-                lut_idx = idx * 2 + side
-                step = min(fog_steps, int(dist * fog_steps / fog))
-                color = lut[lut_idx][step]
+                color = lut[idx * 2 + side][step]
+                rgba = _rgba(color)
+                y0 = int(strip_y)
+                if y0 < 0:
+                    y0 = 0
+                y1 = int(strip_y + strip_h + 1)
+                if y1 > height:
+                    y1 = height
+                if y1 > y0:
+                    a = y0 * stride + col * 4
+                    b = y1 * stride + col * 4
+                    n = y1 - y0
+                    frame[a:b:stride] = rgba[0:1] * n
+                    frame[a + 1:b + 1:stride] = rgba[1:2] * n
+                    frame[a + 2:b + 2:stride] = rgba[2:3] * n
+                    frame[a + 3:b + 3:stride] = rgba[3:4] * n
             else:
                 color = wcolors[idx] if side == 0 else wcolors_dark[idx]
+                rgba = _rgba(color)
+                y0 = int(strip_y)
+                if y0 < 0:
+                    y0 = 0
+                y1 = int(strip_y + strip_h + 1)
+                if y1 > height:
+                    y1 = height
+                if y1 > y0:
+                    a = y0 * stride + col * 4
+                    b = y1 * stride + col * 4
+                    n = y1 - y0
+                    frame[a:b:stride] = rgba[0:1] * n
+                    frame[a + 1:b + 1:stride] = rgba[1:2] * n
+                    frame[a + 2:b + 2:stride] = rgba[2:3] * n
+                    frame[a + 3:b + 3:stride] = rgba[3:4] * n
 
-            # Cached RGBA bytes — no per-column hex parse / tuple / bytes
-            # allocation in the hot loop.
-            rgba = _rgba(color)
-            y0 = int(strip_y)
-            if y0 < 0:
-                y0 = 0
-            y1 = int(strip_y + strip_h + 1)
-            if y1 > height:
-                y1 = height
-            if y1 > y0:
-                # Vertical fill via four channel-wise extended slice
-                # assignments — C-speed instead of one Python write per
-                # row.  Pixel-identical to the old per-row loop.
-                a = y0 * stride + col * 4
-                b = y1 * stride + col * 4
-                frame[a:b:stride] = bytes((rgba[0],)) * (y1 - y0)
-                frame[a + 1:b + 1:stride] = bytes((rgba[1],)) * (y1 - y0)
-                frame[a + 2:b + 2:stride] = bytes((rgba[2],)) * (y1 - y0)
-                frame[a + 3:b + 3:stride] = bytes((rgba[3],)) * (y1 - y0)
+            # ── Wall decals rasterized into the framebuffer ─────────────
+            # Same projection math as the canvas backend; later stacked
+            # decals paint over earlier ones (frame → poster inner).
+            if decal_plane_keys:
+                wall_x = px + rdx * dist
+                wall_y = py + rdy * dist
+                plane = wall_x if side == 0 else wall_y
+                if (side, int(round(plane))) in decal_plane_keys:
+                    for decal, d_steps in self._decals_at_wall(wall_x, wall_y, side):
+                        decal_h = strip_h * decal.height
+                        dy_top = strip_y + (strip_h - decal_h) / 2.0 + decal.v_offset * strip_h
+                        dy0 = int(dy_top)
+                        dy1 = int(dy_top + decal_h) + 1
+                        if dy0 < 0:
+                            dy0 = 0
+                        if dy1 > height:
+                            dy1 = height
+                        if dy1 <= dy0:
+                            continue
+                        rgba = d_steps[step]
+                        a = dy0 * stride + col * 4
+                        b = dy1 * stride + col * 4
+                        n = dy1 - dy0
+                        frame[a:b:stride] = rgba[0:1] * n
+                        frame[a + 1:b + 1:stride] = rgba[1:2] * n
+                        frame[a + 2:b + 2:stride] = rgba[2:3] * n
+                        frame[a + 3:b + 3:stride] = rgba[3:4] * n
+
+            # ── Flat floor decor + ceiling lights (rawimage only) ─────────
+            # Rasterized per column into the framebuffer so they are atomic
+            # with the walls.  A plane crossing closer than the wall (t < dist)
+            # is projected to the floor/ceiling row; fog-faded by distance.
+            if decor_planes and rdx != 0.0:
+                for plx in decor_planes:
+                    t = (plx - px) / rdx
+                    if t <= 0.001 or t >= dist:
+                        continue
+                    wy = py + rdy * t
+                    scale = h / t
+                    if scale > h:
+                        scale = h
+                    if lut is not None:
+                        # Decorative lines/lights fade toward the floor/ceiling
+                        # at 60% the wall fog rate — stopping short of full
+                        # fade so distant decor stays readable (walls may fade
+                        # out completely; lines/lights should not).
+                        d_step = int(min(1.0, t / fog) * 0.6 * fog_steps)
+                        if d_step > fog_steps:
+                            d_step = fog_steps
+                    else:
+                        d_step = 0
+                    f_idx = floor_by_plane.get(plx)
+                    if f_idx:
+                        for bi in f_idx:
+                            b = bands[bi]
+                            if wy < b.y0 or wy > b.y1:
+                                continue
+                            yr = half_h + cam_h * scale
+                            yy = int(yr)
+                            rgba = floor_fog[bi][d_step]
+                            pos = yy * stride + col * 4
+                            if 0 <= yy < height:
+                                frame[pos:pos + 4] = rgba
+                            pos2 = (yy + 1) * stride + col * 4
+                            if 0 <= yy + 1 < height:
+                                frame[pos2:pos2 + 4] = rgba
+                    l_idx = light_by_plane.get(plx)
+                    if l_idx:
+                        for li in l_idx:
+                            l = lights[li]
+                            if abs(wy - l.y) > l.half_len:
+                                continue
+                            yc = half_h - (l.z - cam_h) * scale
+                            th = l.thickness * scale
+                            if th < 2.0:
+                                th = 2.0
+                            elif th > 12.0:
+                                th = 12.0
+                            yy0 = int(yc)
+                            yy1 = int(yc + th) + 1
+                            if yy1 <= yy0:
+                                yy1 = yy0 + 1
+                            rgba = light_fog[li][d_step]
+                            if yy0 < 0:
+                                yy0 = 0
+                            if yy1 > height:
+                                yy1 = height
+                            base = col * 4
+                            for r_ in range(yy0, yy1):
+                                p_ = r_ * stride + base
+                                frame[p_:p_ + 4] = rgba
 
         self._schedule_raw_frame(bytes(frame))
 
@@ -665,6 +990,83 @@ class RaycastCanvas:
             rc.render(px, py, angle)
         """
         self._sprites = sprites if sprites is not None else []
+
+    def set_wall_decals(self, decals: Optional[list[WallDecal]] = None) -> None:
+        """Replace the wall decal list for this frame.
+
+        Each item is a :class:`WallDecal` instance.  Call before ``render()``
+        each frame to update decal positions.  Pass ``None`` or omit the
+        argument to clear all decals for this frame.
+
+        Example::
+
+            rc.set_wall_decals([
+                WallDecal(x=2.5, y=4.5, face=2, image="sprites/poster.png",
+                          width=0.4, height=0.5, v_offset=0.0),
+            ])
+            rc.render(px, py, angle)
+        """
+        self._wall_decals = decals if decals is not None else []
+        # O(1) lookup: (side, wall-plane coord) -> decal indices.  Mirrors the
+        # matching semantics of _find_decal_at_wall(): side 0 matches on the
+        # decal's X plane, side 1 on its Y plane.  Stacked decals (frame +
+        # inner) share a key and are returned in list order.
+        self._decal_index = {}
+        for i, d in enumerate(self._wall_decals):
+            for side, plane in ((0, d.x), (1, d.y)):
+                self._decal_index.setdefault((side, int(round(plane))), []).append(i)
+        self._decal_plane_keys = set(self._decal_index.keys())
+        # Pre-baked per-decal fog RGBA tables (one entry per fog step).
+        if self._fog_lut is not None:
+            self._decal_fog = [
+                tuple(
+                    _rgba(_blend(d.color, self._ceil, s / _FOG_STEPS))
+                    for s in range(_FOG_STEPS + 1)
+                )
+                for d in self._wall_decals
+            ]
+        else:
+            self._decal_fog = [(_rgba(d.color),) for d in self._wall_decals]
+        self._raw_last_key = None
+
+    def set_floor_bands(self, bands: Optional[list[FloorBand]] = None) -> None:
+        """Replace the flat floor-decor lines (rawimage backend).
+
+        Each :class:`FloorBand` is rasterized into the RawImage framebuffer
+        per column with the walls, so it is atomic with them (no overlay
+        control, no wall↔sprite desync flicker).
+        """
+        self._floor_bands = bands if bands is not None else []
+        if self._fog_lut is not None:
+            self._floor_fog = [
+                tuple(
+                    _rgba(_blend(b.color, self._floor, s / _FOG_STEPS))
+                    for s in range(_FOG_STEPS + 1)
+                )
+                for b in self._floor_bands
+            ]
+        else:
+            self._floor_fog = [(_rgba(b.color),) for b in self._floor_bands]
+        self._raw_last_key = None
+
+    def set_ceiling_lights(self, lights: Optional[list[CeilingLight]] = None) -> None:
+        """Replace the ceiling-light decor (rawimage backend).
+
+        Each :class:`CeilingLight` is drawn as a fog-faded ceiling band in the
+        RawImage framebuffer, atomic with the walls.
+        """
+        self._ceiling_lights = lights if lights is not None else []
+        if self._fog_lut is not None:
+            self._light_fog = [
+                tuple(
+                    _rgba(_blend(l.color, self._ceil, s / _FOG_STEPS))
+                    for s in range(_FOG_STEPS + 1)
+                )
+                for l in self._ceiling_lights
+            ]
+        else:
+            self._light_fog = [(_rgba(l.color),) for l in self._ceiling_lights]
+        self._raw_last_key = None
 
     def clear_frame(self) -> None:
         """Blank the view: push one opaque black frame and hide sprites.
@@ -733,6 +1135,13 @@ class RaycastCanvas:
             cv.Rect(x=0, y=0, width=1, height=1, paint=self._wall_paints[i])
             for i in range(self._cols)
         ]
+        # Pre-allocate decal shapes (up to 3 stacked decals per column,
+        # reused each frame).
+        self._decal_paints = [ft.Paint(color=_TRANSPARENT) for _ in range(self._cols * 3)]
+        self._decal_shapes = [
+            cv.Rect(x=0, y=0, width=0, height=0, paint=self._decal_paints[i])
+            for i in range(self._cols * 3)
+        ]
         # Rebuild the persistent shapes list to include the new wall shapes.
         self._shapes = list(self._wall_shapes)
 
@@ -765,6 +1174,158 @@ class RaycastCanvas:
                 ])
         self._fog_lut = lut
 
+    def _build_grid_lut(self) -> None:
+        """Pre-bake RGBA byte tables for 2-D grid textures (rawimage backend).
+
+        For each grid texture, distinct colours are de-duplicated and each
+        distinct colour is blended against the ceiling colour at every fog
+        step once at init — the per-frame hot loop then only does integer
+        index lookups, no hex parsing or blending.
+
+        Per texture the vertical strips are also compressed into **run-length
+        form**: each strip ``u`` becomes a short list of ``(row0, row1,
+        colour_index)`` spans with consecutive rows that share a colour merged
+        into one span.  The hot loop writes one span instead of one band per
+        grid row — a tile texture (8 rows) becomes ~2–3 spans instead of 8
+        strided slice writes per column.
+
+        Entry layout per texture: ``None`` (no grid) or
+        ``[(runs_light, steps_light), (runs_dark, steps_dark),
+        (avg_steps_light, avg_steps_dark), n_rows, n_strips]``
+        where ``runs_side[u]`` is the run list for strip ``u``,
+        ``steps[c][s]`` is the RGBA bytes for colour index ``c`` at fog step
+        ``s``, and ``avg_steps[strip][s]`` is the same for the strip's
+        vertical average (used when the wall strip is too short for
+        individual bands to be visible).
+        """
+        textures = self._wall_textures
+        if textures is None:
+            self._grid_lut = None
+            return
+        tables: list = []
+        any_grid = False
+        for tex in textures:
+            if tex is None or not tex.has_grid:
+                tables.append(None)
+                continue
+            any_grid = True
+            n_rows = len(tex.grid_light)
+            if n_rows == 0:
+                tables.append(None)
+                continue
+            n_strips = len(tex.grid_light[0])
+            entry = []
+            for side_rows in (tex.grid_light, tex.grid_dark):
+                distinct: list[str] = []
+                cmap: dict[str, int] = {}
+                idx_rows = []
+                for row in side_rows:
+                    irow = []
+                    for c in row:
+                        i = cmap.get(c)
+                        if i is None:
+                            i = cmap[c] = len(distinct)
+                            distinct.append(c)
+                        irow.append(i)
+                    idx_rows.append(irow)
+                if self._fog_lut is not None:
+                    steps = [
+                        tuple(
+                            _rgba(_blend(c, self._ceil, s / _FOG_STEPS))
+                            for s in range(_FOG_STEPS + 1)
+                        )
+                        for c in distinct
+                    ]
+                else:
+                    steps = [(_rgba(c),) for c in distinct]
+                # Per-strip run-length merge of consecutive same-colour rows.
+                runs_by_u: list[list[tuple[int, int, int]]] = []
+                for u in range(n_strips):
+                    runs: list[tuple[int, int, int]] = []
+                    prev_c: Optional[int] = None
+                    r0 = 0
+                    for r in range(n_rows):
+                        c = idx_rows[r][u]
+                        if c != prev_c:
+                            if prev_c is not None:
+                                runs.append((r0, r - 1, prev_c))
+                            prev_c = c
+                            r0 = r
+                    if prev_c is not None:
+                        runs.append((r0, n_rows - 1, prev_c))
+                    runs_by_u.append(runs)
+                entry.append((runs_by_u, steps))
+            # Vertical-average fallback tables for short (distant) strips.
+            avg_tables = []
+            for avg_colors in (tex._light, tex._dark):
+                if self._fog_lut is not None:
+                    avg_tables.append([
+                        tuple(
+                            _rgba(_blend(c, self._ceil, s / _FOG_STEPS))
+                            for s in range(_FOG_STEPS + 1)
+                        )
+                        for c in avg_colors
+                    ])
+                else:
+                    avg_tables.append([(_rgba(c),) for c in avg_colors])
+            entry.append(tuple(avg_tables))
+            entry.append(n_rows)
+            entry.append(n_strips)
+            tables.append(entry)
+        self._grid_lut = tables if any_grid else None
+
+    def _decals_at_wall(
+        self, wall_x: float, wall_y: float, side: int
+    ) -> list[tuple[WallDecal, tuple[bytes, ...]]]:
+        """Return up to 3 ``(decal, fog_rgba_table)`` matches at a wall hit.
+
+        Uses the O(1) ``_decal_index`` built by ``set_wall_decals()``; the
+        matching rules mirror ``_find_decal_at_wall()``.  Stacked decals are
+        returned in list order so later decals (e.g. poster inners) are
+        painted over earlier ones (frames).
+        """
+        if not self._decal_index:
+            return []
+        plane = wall_x if side == 0 else wall_y
+        hits: list[tuple[WallDecal, tuple[bytes, ...]]] = []
+        for i in self._decal_index.get((side, int(round(plane))), ()):
+            d = self._wall_decals[i]
+            if side == 0:
+                ok = abs(wall_x - d.x) <= 0.01 and abs(wall_y - d.y) <= d.width / 2.0
+            else:
+                ok = abs(wall_y - d.y) <= 0.01 and abs(wall_x - d.x) <= d.width / 2.0
+            if ok:
+                hits.append((d, self._decal_fog[i]))
+                if len(hits) >= 3:
+                    break
+        return hits
+
+    def _find_decal_at_wall(self, wall_x: float, wall_y: float, side: int) -> Optional[WallDecal]:
+        """Find a wall decal at the given wall hit position.
+
+        Parameters
+        ----------
+        wall_x, wall_y : float
+            World position of the wall hit point.
+        side : int
+            Raycaster side: 0 = NS wall (X-face), 1 = EW wall (Y-face).
+
+        Returns
+        -------
+        WallDecal or None
+            The first matching decal, or None if no decal is at this position.
+        """
+        for decal in self._wall_decals:
+            if side == 0:
+                # NS wall — runs along X axis; check X proximity
+                if abs(wall_x - decal.x) <= 0.01 and abs(wall_y - decal.y) <= decal.width / 2.0:
+                    return decal
+            else:
+                # EW wall — runs along Y axis; check Y proximity
+                if abs(wall_y - decal.y) <= 0.01 and abs(wall_x - decal.x) <= decal.width / 2.0:
+                    return decal
+        return None
+
     def render(self, px: float, py: float, angle: float) -> None:
         """Render one frame from the player's world position and facing angle.
 
@@ -787,13 +1348,26 @@ class RaycastCanvas:
 
         # ── Wall columns ──────────────────────────────────────────────────────
         if self._renderer == "rawimage":
+            # Camera did not move — the wall frame is pixel-identical AND the
+            # overlay sprites are already placed correctly, so skip the entire
+            # frame (wall build + RawImage push + sprite control updates).
+            # Zero per-frame work while idle kills wall/sprite desync flicker.
+            key = (px, py, angle)
+            if key == self._raw_last_key and self._sprites is self._sprites_key:
+                self._dbg_wall_ms = 0.0
+                self._dbg_sprite_ms = 0.0
+                return
+            self._sprites_key = self._sprites
+            _t0 = _time.perf_counter()
             self._render_wall_frame(px, py, angle, col_w, half_fov, lut)
+            self._dbg_wall_ms = (_time.perf_counter() - _t0) * 1000.0
         else:
             textures = self._wall_textures
             table = self._ray_table
             _cast = self._cast
             cos_a = math.cos(angle)
             sin_a = math.sin(angle)
+            used_decals = 0
             for col in range(self._cols):
                 cd, sd = table[col]
                 rdx = cos_a * cd - sin_a * sd
@@ -828,7 +1402,26 @@ class RaycastCanvas:
                 r.height = strip_h
                 self._wall_paints[col].color = color
 
+                # ── Wall decals (flat against wall surface) ────────────────
+                # Up to 3 stacked decals per column (frame → inner), drawn
+                # in list order so later decals paint over earlier ones.
+                wall_x = px + rdx * dist
+                wall_y = py + rdy * dist
+                for decal, _ in self._decals_at_wall(wall_x, wall_y, side):
+                    if used_decals >= len(self._decal_shapes):
+                        break
+                    decal_h = strip_h * decal.height
+                    decal_y = strip_y + (strip_h - decal_h) / 2.0 + decal.v_offset * strip_h
+                    dr = self._decal_shapes[used_decals]
+                    dr.x = strip_x
+                    dr.y = decal_y
+                    dr.width = col_w + 1
+                    dr.height = decal_h
+                    self._decal_paints[used_decals].color = decal.color
+                    used_decals += 1
+
         # ── Sprite rendering (billboard sprites, depth-sorted back-to-front) ──
+        _t1 = _time.perf_counter()
 
         visible: list[tuple[float, float, float, float, float, SpriteDef]] = []
         for sprite in self._sprites:
@@ -852,11 +1445,15 @@ class RaycastCanvas:
             world_h = max(sprite.world_height, 0.01)
             sprite_h = world_h * sprite_base * sprite.scale_y
             sprite_w = sprite_h * sprite.aspect_ratio * sprite.scale_x
-            screen_y = half_h - sprite_h + (self._cam_h - sprite.z) * sprite_base + sprite.floor_offset * sprite_base
+            screen_y = round(half_h - sprite_h + (self._cam_h - sprite.z) * sprite_base + sprite.floor_offset * sprite_base)
 
-            screen_x = half_w + (sprite_angle / self._fov) * self._width - sprite_w / 2
+            screen_x = round(half_w + (sprite_angle / self._fov) * self._width - sprite_w / 2)
 
-            visible.append((dist, screen_x, sprite_w, sprite_h, screen_y, sprite))
+            # Whole-pixel geometry (snapped once per frame) keeps the
+            # per-column occlusion test stable across frames — LookPad
+            # micro-noise that would flip a column boundary (and toggle the
+            # whole↔segmented draw mode) is absorbed into the ±0.5 px snap.
+            visible.append((dist, screen_x, max(1, sprite_w), max(1, sprite_h), screen_y, sprite))
 
         visible.sort(key=lambda v: v[0], reverse=True)
 
@@ -1009,18 +1606,24 @@ class RaycastCanvas:
         # ── Submit canvas shapes in one batch ───────────────────────────────
         # Mutate the persistent shapes list in-place for the shadow range,
         # then set it on the canvas.  No new list objects created per frame.
-        shadow_end = used_shadows if used_shadows > 0 else 0
         if self._renderer == "rawimage":
+            shadow_end = used_shadows if used_shadows > 0 else 0
             self._shapes[:shadow_end] = self._shadow_shapes[:used_shadows]
             del self._shapes[shadow_end:]
         else:
-            self._shapes[self._cols:self._cols + shadow_end] = (
-                self._shadow_shapes[:used_shadows]
-            )
-            # Trim any leftover shadows from a previous frame
-            del self._shapes[self._cols + shadow_end:]
+            # Add decal shapes after wall shapes
+            decal_start = self._cols
+            decal_end = decal_start + used_decals
+            self._shapes[decal_start:decal_end] = self._decal_shapes[:used_decals]
+            # Add shadow shapes after decal shapes
+            shadow_start = decal_end
+            shadow_end = shadow_start + (used_shadows if used_shadows > 0 else 0)
+            self._shapes[shadow_start:shadow_end] = self._shadow_shapes[:used_shadows]
+            # Trim any leftover shapes from a previous frame
+            del self._shapes[shadow_end:]
         self._used_sprite_images = used_images
         self._used_seg_images = used_segs
+        self._dbg_sprite_ms = (_time.perf_counter() - _t1) * 1000.0
         self._cv.shapes = self._shapes
         if _batch_active is not None and _batch_active():
             return

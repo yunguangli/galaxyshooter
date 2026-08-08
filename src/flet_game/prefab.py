@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import struct
 import zlib
-from base64 import b64encode
+from base64 import b64decode, b64encode
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -166,6 +166,80 @@ def _gen_hero_walk2() -> str:
     return _make_png(W, H, bytes(p))
 
 
+def _gen_hero_idle_back() -> str:
+    """32 x 64 blue-clad hero — back view (idle).  Hair covers the head."""
+    W, H = 32, 64
+    p = bytearray(W * H * 4)
+    # Hair (full head — back of head)
+    _box(p, W, 10, 2, 22, 10, 80, 50, 30)
+    _box(p, W, 10, 8, 22, 22, 80, 50, 30)
+    # Neck
+    _box(p, W, 14, 22, 18, 26, 210, 170, 130)
+    # Body (blue tunic)
+    _box(p, W, 8, 26, 24, 46, 30, 80, 200)
+    # Belt
+    _box(p, W, 8, 42, 24, 46, 140, 100, 40)
+    _px(p, W, 15, 43, 220, 180, 60)
+    _px(p, W, 16, 43, 220, 180, 60)
+    # Arms (skin)
+    _box(p, W, 4, 28, 8, 44, 220, 180, 140)
+    _box(p, W, 24, 28, 28, 44, 220, 180, 140)
+    # Hands
+    _box(p, W, 4, 44, 8, 48, 210, 170, 130)
+    _box(p, W, 24, 44, 28, 48, 210, 170, 130)
+    # Legs (brown pants)
+    _box(p, W, 10, 46, 15, 60, 100, 70, 40)
+    _box(p, W, 17, 46, 22, 60, 100, 70, 40)
+    # Boots
+    _box(p, W, 9, 58, 15, 64, 60, 40, 20)
+    _box(p, W, 17, 58, 23, 64, 60, 40, 20)
+    return _make_png(W, H, bytes(p))
+
+
+def _gen_hero_walk1_back() -> str:
+    """32 x 64 blue-clad hero — back view (walk frame 1)."""
+    W, H = 32, 64
+    p = bytearray(W * H * 4)
+    _box(p, W, 10, 2, 22, 10, 80, 50, 30)
+    _box(p, W, 10, 8, 22, 22, 80, 50, 30)
+    _box(p, W, 14, 22, 18, 26, 210, 170, 130)
+    _box(p, W, 8, 26, 24, 46, 30, 80, 200)
+    _box(p, W, 8, 42, 24, 46, 140, 100, 40)
+    _px(p, W, 15, 43, 220, 180, 60)
+    _px(p, W, 16, 43, 220, 180, 60)
+    _box(p, W, 4, 28, 8, 42, 220, 180, 140)
+    _box(p, W, 24, 30, 28, 44, 220, 180, 140)
+    _box(p, W, 4, 42, 8, 46, 210, 170, 130)
+    _box(p, W, 24, 44, 28, 48, 210, 170, 130)
+    _box(p, W, 8, 46, 14, 60, 100, 70, 40)
+    _box(p, W, 18, 46, 24, 58, 100, 70, 40)
+    _box(p, W, 7, 58, 14, 64, 60, 40, 20)
+    _box(p, W, 18, 56, 24, 62, 60, 40, 20)
+    return _make_png(W, H, bytes(p))
+
+
+def _gen_hero_walk2_back() -> str:
+    """32 x 64 blue-clad hero — back view (walk frame 2)."""
+    W, H = 32, 64
+    p = bytearray(W * H * 4)
+    _box(p, W, 10, 2, 22, 10, 80, 50, 30)
+    _box(p, W, 10, 8, 22, 22, 80, 50, 30)
+    _box(p, W, 14, 22, 18, 26, 210, 170, 130)
+    _box(p, W, 8, 26, 24, 46, 30, 80, 200)
+    _box(p, W, 8, 42, 24, 46, 140, 100, 40)
+    _px(p, W, 15, 43, 220, 180, 60)
+    _px(p, W, 16, 43, 220, 180, 60)
+    _box(p, W, 4, 30, 8, 44, 220, 180, 140)
+    _box(p, W, 24, 28, 28, 42, 220, 180, 140)
+    _box(p, W, 4, 44, 8, 48, 210, 170, 130)
+    _box(p, W, 24, 42, 28, 46, 210, 170, 130)
+    _box(p, W, 8, 46, 14, 58, 100, 70, 40)
+    _box(p, W, 18, 46, 24, 60, 100, 70, 40)
+    _box(p, W, 8, 56, 14, 62, 60, 40, 20)
+    _box(p, W, 17, 58, 24, 64, 60, 40, 20)
+    return _make_png(W, H, bytes(p))
+
+
 def _gen_enemy_idle() -> str:
     """32 x 64 red demon (idle)."""
     W, H = 32, 64
@@ -276,6 +350,89 @@ def _gen_enemy_walk2() -> str:
     return _make_png(W, H, bytes(p))
 
 
+def _gen_enemy_idle_back() -> str:
+    """32 x 64 red demon — back view (idle).  Horns visible, no face."""
+    W, H = 32, 64
+    p = bytearray(W * H * 4)
+    # Horns
+    _box(p, W, 8, 0, 11, 6, 160, 40, 40)
+    _box(p, W, 21, 0, 24, 6, 160, 40, 40)
+    # Head (solid — back of head, no face)
+    _box(p, W, 9, 4, 23, 20, 180, 60, 60)
+    # Neck
+    _box(p, W, 13, 20, 19, 24, 170, 50, 50)
+    # Body (armored torso)
+    _box(p, W, 7, 24, 25, 46, 200, 40, 40)
+    _box(p, W, 9, 26, 23, 30, 140, 30, 30)
+    # Belt
+    _box(p, W, 7, 42, 25, 46, 100, 30, 30)
+    # Arms (red)
+    _box(p, W, 3, 26, 7, 44, 190, 50, 50)
+    _box(p, W, 25, 26, 29, 44, 190, 50, 50)
+    # Claws
+    _box(p, W, 3, 44, 7, 48, 120, 30, 30)
+    _box(p, W, 25, 44, 29, 48, 120, 30, 30)
+    _px(p, W, 3, 48, 200, 200, 200)
+    _px(p, W, 6, 48, 200, 200, 200)
+    _px(p, W, 25, 48, 200, 200, 200)
+    _px(p, W, 28, 48, 200, 200, 200)
+    # Legs (dark red)
+    _box(p, W, 10, 46, 15, 60, 150, 20, 20)
+    _box(p, W, 17, 46, 22, 60, 150, 20, 20)
+    # Hooves
+    _box(p, W, 9, 58, 15, 64, 80, 50, 30)
+    _box(p, W, 17, 58, 23, 64, 80, 50, 30)
+    return _make_png(W, H, bytes(p))
+
+
+def _gen_enemy_walk1_back() -> str:
+    """32 x 64 red demon — back view (walk frame 1)."""
+    W, H = 32, 64
+    p = bytearray(W * H * 4)
+    _box(p, W, 8, 0, 11, 6, 160, 40, 40)
+    _box(p, W, 21, 0, 24, 6, 160, 40, 40)
+    _box(p, W, 9, 4, 23, 20, 180, 60, 60)
+    _box(p, W, 13, 20, 19, 24, 170, 50, 50)
+    _box(p, W, 7, 24, 25, 46, 200, 40, 40)
+    _box(p, W, 9, 26, 23, 30, 140, 30, 30)
+    _box(p, W, 7, 42, 25, 46, 100, 30, 30)
+    _box(p, W, 3, 28, 7, 42, 190, 50, 50)
+    _box(p, W, 25, 30, 29, 44, 190, 50, 50)
+    _box(p, W, 3, 42, 7, 46, 120, 30, 30)
+    _box(p, W, 25, 44, 29, 48, 120, 30, 30)
+    _px(p, W, 3, 46, 200, 200, 200)
+    _px(p, W, 28, 48, 200, 200, 200)
+    _box(p, W, 8, 46, 14, 60, 150, 20, 20)
+    _box(p, W, 18, 46, 24, 58, 150, 20, 20)
+    _box(p, W, 7, 58, 14, 64, 80, 50, 30)
+    _box(p, W, 18, 56, 24, 62, 80, 50, 30)
+    return _make_png(W, H, bytes(p))
+
+
+def _gen_enemy_walk2_back() -> str:
+    """32 x 64 red demon — back view (walk frame 2)."""
+    W, H = 32, 64
+    p = bytearray(W * H * 4)
+    _box(p, W, 8, 0, 11, 6, 160, 40, 40)
+    _box(p, W, 21, 0, 24, 6, 160, 40, 40)
+    _box(p, W, 9, 4, 23, 20, 180, 60, 60)
+    _box(p, W, 13, 20, 19, 24, 170, 50, 50)
+    _box(p, W, 7, 24, 25, 46, 200, 40, 40)
+    _box(p, W, 9, 26, 23, 30, 140, 30, 30)
+    _box(p, W, 7, 42, 25, 46, 100, 30, 30)
+    _box(p, W, 3, 30, 7, 44, 190, 50, 50)
+    _box(p, W, 25, 28, 29, 42, 190, 50, 50)
+    _box(p, W, 3, 44, 7, 48, 120, 30, 30)
+    _box(p, W, 25, 42, 29, 46, 120, 30, 30)
+    _px(p, W, 3, 48, 200, 200, 200)
+    _px(p, W, 28, 46, 200, 200, 200)
+    _box(p, W, 8, 46, 14, 58, 150, 20, 20)
+    _box(p, W, 18, 46, 24, 60, 150, 20, 20)
+    _box(p, W, 8, 56, 14, 62, 80, 50, 30)
+    _box(p, W, 17, 58, 24, 64, 80, 50, 30)
+    return _make_png(W, H, bytes(p))
+
+
 def _gen_skeleton_idle() -> str:
     """32 x 64 white skeleton (idle)."""
     W, H = 32, 64
@@ -379,6 +536,80 @@ def _gen_skeleton_walk2() -> str:
     return _make_png(W, H, bytes(p))
 
 
+def _gen_skeleton_idle_back() -> str:
+    """32 x 64 white skeleton — back view (idle).  Plain skull, no face."""
+    W, H = 32, 64
+    p = bytearray(W * H * 4)
+    # Skull (solid — back of head)
+    _box(p, W, 10, 2, 22, 18, 230, 230, 220)
+    # Spine
+    _box(p, W, 14, 18, 18, 26, 220, 220, 210)
+    # Ribcage
+    _box(p, W, 8, 24, 24, 38, 220, 220, 210)
+    _box(p, W, 10, 26, 22, 28, 30, 30, 30)
+    _box(p, W, 10, 30, 22, 32, 30, 30, 30)
+    _box(p, W, 10, 34, 22, 36, 30, 30, 30)
+    # Pelvis
+    _box(p, W, 10, 38, 22, 44, 210, 210, 200)
+    # Arms (bone)
+    _box(p, W, 4, 26, 8, 42, 220, 220, 210)
+    _box(p, W, 24, 26, 28, 42, 220, 220, 210)
+    # Hands (claw)
+    _box(p, W, 4, 42, 8, 46, 200, 200, 190)
+    _box(p, W, 24, 42, 28, 46, 200, 200, 190)
+    # Legs (bone)
+    _box(p, W, 11, 44, 14, 58, 210, 210, 200)
+    _box(p, W, 18, 44, 21, 58, 210, 210, 200)
+    # Feet
+    _box(p, W, 10, 58, 15, 64, 190, 190, 180)
+    _box(p, W, 17, 58, 22, 64, 190, 190, 180)
+    return _make_png(W, H, bytes(p))
+
+
+def _gen_skeleton_walk1_back() -> str:
+    """32 x 64 skeleton — back view (walk frame 1)."""
+    W, H = 32, 64
+    p = bytearray(W * H * 4)
+    _box(p, W, 10, 2, 22, 18, 230, 230, 220)
+    _box(p, W, 14, 18, 18, 26, 220, 220, 210)
+    _box(p, W, 8, 24, 24, 38, 220, 220, 210)
+    _box(p, W, 10, 26, 22, 28, 30, 30, 30)
+    _box(p, W, 10, 30, 22, 32, 30, 30, 30)
+    _box(p, W, 10, 34, 22, 36, 30, 30, 30)
+    _box(p, W, 10, 38, 22, 44, 210, 210, 200)
+    _box(p, W, 4, 28, 8, 40, 220, 220, 210)
+    _box(p, W, 24, 30, 28, 42, 220, 220, 210)
+    _box(p, W, 4, 40, 8, 44, 200, 200, 190)
+    _box(p, W, 24, 42, 28, 46, 200, 200, 190)
+    _box(p, W, 9, 44, 13, 58, 210, 210, 200)
+    _box(p, W, 19, 44, 23, 56, 210, 210, 200)
+    _box(p, W, 8, 58, 14, 64, 190, 190, 180)
+    _box(p, W, 19, 56, 23, 62, 190, 190, 180)
+    return _make_png(W, H, bytes(p))
+
+
+def _gen_skeleton_walk2_back() -> str:
+    """32 x 64 skeleton — back view (walk frame 2)."""
+    W, H = 32, 64
+    p = bytearray(W * H * 4)
+    _box(p, W, 10, 2, 22, 18, 230, 230, 220)
+    _box(p, W, 14, 18, 18, 26, 220, 220, 210)
+    _box(p, W, 8, 24, 24, 38, 220, 220, 210)
+    _box(p, W, 10, 26, 22, 28, 30, 30, 30)
+    _box(p, W, 10, 30, 22, 32, 30, 30, 30)
+    _box(p, W, 10, 34, 22, 36, 30, 30, 30)
+    _box(p, W, 10, 38, 22, 44, 210, 210, 200)
+    _box(p, W, 4, 30, 8, 42, 220, 220, 210)
+    _box(p, W, 24, 28, 28, 40, 220, 220, 210)
+    _box(p, W, 4, 42, 8, 46, 200, 200, 190)
+    _box(p, W, 24, 40, 28, 44, 200, 200, 190)
+    _box(p, W, 9, 44, 13, 56, 210, 210, 200)
+    _box(p, W, 19, 44, 23, 58, 210, 210, 200)
+    _box(p, W, 9, 56, 13, 62, 190, 190, 180)
+    _box(p, W, 18, 58, 24, 64, 190, 190, 180)
+    return _make_png(W, H, bytes(p))
+
+
 def _gen_slime_idle() -> str:
     """32 x 32 green slime blob (idle)."""
     W, H = 32, 32
@@ -437,6 +668,42 @@ def _gen_slime_walk2() -> str:
     _px(p, W, 19, 12, 0, 0, 0)
     # Mouth
     _box(p, W, 13, 20, 19, 22, 40, 120, 40)
+    return _make_png(W, H, bytes(p))
+
+
+def _gen_slime_idle_back() -> str:
+    """32 x 32 green slime blob — back view (idle).  No eyes or mouth."""
+    W, H = 32, 32
+    p = bytearray(W * H * 4)
+    # Body (rounded blob)
+    _box(p, W, 6, 10, 26, 28, 60, 180, 60)
+    _box(p, W, 8, 6, 24, 10, 60, 180, 60)
+    _box(p, W, 10, 4, 22, 6, 60, 180, 60)
+    # Highlight
+    _box(p, W, 10, 8, 18, 14, 100, 220, 100)
+    _box(p, W, 12, 6, 16, 8, 120, 240, 120)
+    return _make_png(W, H, bytes(p))
+
+
+def _gen_slime_walk1_back() -> str:
+    """32 x 32 green slime — back view (squish frame)."""
+    W, H = 32, 32
+    p = bytearray(W * H * 4)
+    _box(p, W, 4, 14, 28, 28, 60, 180, 60)
+    _box(p, W, 6, 10, 26, 14, 60, 180, 60)
+    _box(p, W, 8, 8, 24, 10, 60, 180, 60)
+    _box(p, W, 8, 12, 16, 16, 100, 220, 100)
+    return _make_png(W, H, bytes(p))
+
+
+def _gen_slime_walk2_back() -> str:
+    """32 x 32 green slime — back view (squish frame 2)."""
+    W, H = 32, 32
+    p = bytearray(W * H * 4)
+    _box(p, W, 4, 14, 28, 28, 60, 180, 60)
+    _box(p, W, 6, 10, 26, 14, 60, 180, 60)
+    _box(p, W, 8, 8, 24, 10, 60, 180, 60)
+    _box(p, W, 8, 12, 16, 16, 100, 220, 100)
     return _make_png(W, H, bytes(p))
 
 
@@ -1199,6 +1466,91 @@ class PrefabCharacter:
     walk: list[PrefabSprite] = field(default_factory=list)
 
 
+# ── PNG decode + mirror helpers ──────────────────────────────────────────────
+
+_DATA_URI_PREFIX = "data:image/png;base64,"
+
+
+def _decode_png_pixels(data_uri: str) -> tuple[int, int, bytearray]:
+    """Decode a ``data:image/png;base64,...`` URI to (width, height, RGBA pixels)."""
+    raw = b64decode(data_uri[len(_DATA_URI_PREFIX):])
+    pos = 8  # skip PNG signature
+    width = height = 0
+    pixel_data = b""
+    while pos < len(raw):
+        length = struct.unpack(">I", raw[pos:pos + 4])[0]
+        ctype = raw[pos + 4:pos + 8]
+        cdata = raw[pos + 8:pos + 8 + length]
+        pos += 12 + length
+        if ctype == b"IHDR":
+            width, height = struct.unpack(">II", cdata[:8])
+        elif ctype == b"IDAT":
+            pixel_data += cdata
+    decompressed = zlib.decompress(pixel_data)
+    pixels = bytearray()
+    stride = width * 4
+    for y in range(height):
+        offset = y * (stride + 1) + 1  # skip filter byte per row
+        pixels.extend(decompressed[offset:offset + stride])
+    return width, height, pixels
+
+
+def _mirror_pixels(width: int, height: int, pixels: bytearray) -> str:
+    """Horizontally flip raw RGBA pixels and return a PNG data URI."""
+    flipped = bytearray(len(pixels))
+    for y in range(height):
+        src_row = y * width * 4
+        dst_row = (y + 1) * width * 4 - 4
+        for x in range(width):
+            si = src_row + x * 4
+            di = dst_row - x * 4
+            flipped[di:di + 4] = pixels[si:si + 4]
+    return _make_png(width, height, bytes(flipped))
+
+
+def _flip_vertical_pixels(width: int, height: int, pixels: bytearray) -> str:
+    """Vertically flip raw RGBA pixels and return a PNG data URI."""
+    flipped = bytearray(len(pixels))
+    row_size = width * 4
+    for y in range(height):
+        src = y * row_size
+        dst = (height - 1 - y) * row_size
+        flipped[dst:dst + row_size] = pixels[src:src + row_size]
+    return _make_png(width, height, bytes(flipped))
+
+
+def mirror_character(char: PrefabCharacter) -> PrefabCharacter:
+    """Return a horizontally mirrored copy of *char*."""
+    w, h, px = _decode_png_pixels(char.idle.data_uri)
+    mirrored_idle = PrefabSprite(
+        data_uri=_mirror_pixels(w, h, px), width=w, height=h,
+    )
+    mirrored_walk = [
+        PrefabSprite(
+            data_uri=_mirror_pixels(*_decode_png_pixels(f.data_uri)),
+            width=f.width, height=f.height,
+        )
+        for f in char.walk
+    ]
+    return PrefabCharacter(idle=mirrored_idle, walk=mirrored_walk)
+
+
+def flip_vertical_character(char: PrefabCharacter) -> PrefabCharacter:
+    """Return a vertically flipped (back-facing) copy of *char*."""
+    w, h, px = _decode_png_pixels(char.idle.data_uri)
+    flipped_idle = PrefabSprite(
+        data_uri=_flip_vertical_pixels(w, h, px), width=w, height=h,
+    )
+    flipped_walk = [
+        PrefabSprite(
+            data_uri=_flip_vertical_pixels(*_decode_png_pixels(f.data_uri)),
+            width=f.width, height=f.height,
+        )
+        for f in char.walk
+    ]
+    return PrefabCharacter(idle=flipped_idle, walk=flipped_walk)
+
+
 # ── Lazy-evaluated prefab instances ─────────────────────────────────────────
 
 HERO = PrefabCharacter(
@@ -1236,6 +1588,42 @@ SLIME = PrefabCharacter(
     ],
 )
 """Slime sprite with idle + walk animation."""
+
+HERO_BACK = PrefabCharacter(
+    idle=PrefabSprite(data_uri=_gen_hero_idle_back(), width=32, height=64),
+    walk=[
+        PrefabSprite(data_uri=_gen_hero_walk1_back(), width=32, height=64),
+        PrefabSprite(data_uri=_gen_hero_walk2_back(), width=32, height=64),
+    ],
+)
+"""Hero back-view sprite (hair covers head, no face)."""
+
+ENEMY_BACK = PrefabCharacter(
+    idle=PrefabSprite(data_uri=_gen_enemy_idle_back(), width=32, height=64),
+    walk=[
+        PrefabSprite(data_uri=_gen_enemy_walk1_back(), width=32, height=64),
+        PrefabSprite(data_uri=_gen_enemy_walk2_back(), width=32, height=64),
+    ],
+)
+"""Enemy back-view sprite (horns visible, no face)."""
+
+SKELETON_BACK = PrefabCharacter(
+    idle=PrefabSprite(data_uri=_gen_skeleton_idle_back(), width=32, height=64),
+    walk=[
+        PrefabSprite(data_uri=_gen_skeleton_walk1_back(), width=32, height=64),
+        PrefabSprite(data_uri=_gen_skeleton_walk2_back(), width=32, height=64),
+    ],
+)
+"""Skeleton back-view sprite (plain skull, no face)."""
+
+SLIME_BACK = PrefabCharacter(
+    idle=PrefabSprite(data_uri=_gen_slime_idle_back(), width=32, height=32),
+    walk=[
+        PrefabSprite(data_uri=_gen_slime_walk1_back(), width=32, height=32),
+        PrefabSprite(data_uri=_gen_slime_walk2_back(), width=32, height=32),
+    ],
+)
+"""Slime back-view sprite (no eyes or mouth)."""
 
 ITEM = PrefabCharacter(
     idle=PrefabSprite(data_uri=_gen_item_coin(), width=32, height=32),

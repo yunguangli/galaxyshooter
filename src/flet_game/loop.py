@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import sys
 import time
 from typing import Callable, Awaitable
 
@@ -62,10 +63,55 @@ _MAX_DT: float = 0.1
 # that moved.  Using a counter (not a bool) supports nested/multiple loops.
 _batch_depth: int = 0
 
+# Frame-dirty flag — set by controls (RaycastCanvas.render(), Label._update(),
+# VirtualJoystick, ...) whenever they actually mutate UI state inside a frame.
+# When GameLoop.skip_clean_frames is enabled, frames where nothing was marked
+# dirty skip the end-of-frame page.update() entirely (the tree diff would be
+# empty, so the bridge round-trip is pure overhead).
+_frame_dirty: bool = False
+
 
 def batch_active() -> bool:
     """Return True while a GameLoop frame is dispatching callbacks."""
     return _batch_depth > 0
+
+
+def mark_frame_dirty() -> None:
+    """Record that a control mutated UI state inside this frame.
+
+    Controls that change geometry/text/visibility during a game-loop frame
+    call this (instead of relying on the end-of-frame page.update() alone) so
+    the loop knows the frame actually needs a flush when ``skip_clean_frames``
+    is enabled.
+    """
+    global _frame_dirty
+    _frame_dirty = True
+
+
+def consume_frame_dirty() -> bool:
+    """Return True if any control marked this frame dirty (and reset the flag)."""
+    global _frame_dirty
+    if _frame_dirty:
+        _frame_dirty = False
+        return True
+    return False
+
+
+def _apply_timer_resolution() -> None:
+    """Best-effort Windows multimedia timer fix (safe no-op elsewhere).
+
+    ``asyncio.sleep()`` on Windows rounds up to the ~15.6 ms system timer
+    tick, which caps a 60 Hz game loop at ~32 fps.  ``timeBeginPeriod(1)``
+    lowers the tick to 1 ms so sleeps can hit the frame budget precisely.
+    """
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            winmm = ctypes.WinDLL("winmm", use_last_error=True)
+            winmm.timeBeginPeriod(1)
+        except Exception:
+            pass
 
 
 class GameLoop:
@@ -87,6 +133,9 @@ class GameLoop:
         self._target_fps: int = max(1, fps)
         self._callbacks: list[tuple[UpdateCallback, bool]] = []
         self._batch_updates: bool = True
+        # Opt-in: skip the end-of-frame page.update() on frames where no
+        # control marked itself dirty.  Default off (library-safe).
+        self._skip_clean_frames: bool = False
 
         # Loop state
         self._running: bool = False
@@ -99,6 +148,10 @@ class GameLoop:
         # InputManagers registered via register_input() — ticked at the start
         # of each frame so is_key_down() shares one time.monotonic() result.
         self._input_managers: list = []
+
+        # Desktop 60 fps is otherwise capped at ~32 by the ~15.6 ms Windows
+        # timer tick — asyncio.sleep() can't round below it.
+        _apply_timer_resolution()
 
     # ------------------------------------------------------------------
     # Registration
@@ -275,6 +328,24 @@ class GameLoop:
     def batch_updates(self, value: bool) -> None:
         self._batch_updates = bool(value)
 
+    @property
+    def skip_clean_frames(self) -> bool:
+        """Whether to skip ``page.update()`` on frames where nothing changed.
+
+        When enabled, controls must call :func:`mark_frame_dirty` whenever
+        they mutate UI state inside a frame (RaycastCanvas.render(),
+        Label._update() and VirtualJoystick already do).  Frames where no
+        control marks itself dirty skip the end-of-frame flush entirely —
+        the page-tree diff would be empty anyway, so the bridge round-trip
+        is pure overhead.  Default ``False``; scenes that mutate raw Flet
+        controls directly should leave it off.
+        """
+        return self._skip_clean_frames
+
+    @skip_clean_frames.setter
+    def skip_clean_frames(self, value: bool) -> None:
+        self._skip_clean_frames = bool(value)
+
     # ------------------------------------------------------------------
     # Internal loop
     # ------------------------------------------------------------------
@@ -359,15 +430,19 @@ class GameLoop:
                     # --- Single page flush per frame ------------------------
                     # One page.update() is much cheaper than calling
                     # control.update() for every sprite that moved this frame.
-                    try:
-                        self._page.update()
-                    except RuntimeError as exc:
-                        # Session destroyed (window closed while loop was running).
-                        # Exit cleanly rather than spamming error callbacks.
-                        if "destroyed session" in str(exc).lower():
-                            self._running = False
-                            return
-                        raise
+                    # With skip_clean_frames enabled, frames where no control
+                    # marked itself dirty skip the flush entirely — the tree
+                    # diff would be empty, so the round-trip is pure overhead.
+                    if not self._skip_clean_frames or consume_frame_dirty():
+                        try:
+                            self._page.update()
+                        except RuntimeError as exc:
+                            # Session destroyed (window closed while loop was running).
+                            # Exit cleanly rather than spamming error callbacks.
+                            if "destroyed session" in str(exc).lower():
+                                self._running = False
+                                return
+                            raise
 
             # --- Sleep the remaining frame budget ---------------------------
             frame_elapsed = time.monotonic() - frame_start

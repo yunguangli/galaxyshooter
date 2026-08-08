@@ -197,6 +197,50 @@ class WallTexture:
         return tex
 
     @classmethod
+    def tile_grid(
+        cls,
+        tile: str,
+        grout: str,
+        rows: int = 16,
+        strips: int = 64,
+        every: int = 8,
+    ) -> "WallTexture":
+        """Create a 2-D tiled look: grout lines every ``every`` strips AND
+        every ``every`` rows, giving a proper repeating tile grid.
+
+        Parameters
+        ----------
+        tile : str
+            Hex colour of the tile face.
+        grout : str
+            Hex colour of the grout lines.
+        rows : int
+            Vertical grid resolution (default 16).
+        strips : int
+            Horizontal resolution — one colour per vertical strip
+            (default 64).
+        every : int
+            Grout spacing in both directions (default 8).  Should be
+            ``<= rows`` — with ``every > rows`` the horizontal grout
+            collapses onto a single row and the wall reads as vertical
+            stripes.
+
+        Returns
+        -------
+        WallTexture
+        """
+        grid = []
+        for r in range(rows):
+            row = []
+            for s in range(strips):
+                if s % every == 0 or r % every == 0:
+                    row.append(grout)
+                else:
+                    row.append(tile)
+            grid.append(row)
+        return cls.from_grid(grid)
+
+    @classmethod
     def from_image(
         cls,
         path: str,

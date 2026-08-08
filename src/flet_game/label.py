@@ -27,8 +27,10 @@ from ._colors import _resolve_color
 # every property-setter call. See sprite.py for the same pattern.
 try:
     from .loop import batch_active as _batch_active
+    from .loop import mark_frame_dirty as _mark_dirty
 except ImportError:
     _batch_active = None
+    _mark_dirty = None
 
 
 class Label:
@@ -292,6 +294,7 @@ class Label:
         # When the GameLoop is active, batch_active() returns True and a single
         # page.update() fires at end of frame — suppress per-control updates.
         if _batch_active is not None and _batch_active():
+            _mark_dirty()
             return
         self._container.update()
 

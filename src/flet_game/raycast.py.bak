@@ -99,7 +99,6 @@ except ImportError:
 WallTexture = None  # type: ignore[assignment,misc]
 
 from .stairs import StairDef, _StepGeom, build_step_geom
-from .ramp import RampDef, _RampGeom, build_ramp_geom
 
 _FOG_STEPS = 64
 # Horizontal sampling resolution for image-backed wall decals (posters).
@@ -448,28 +447,6 @@ class CeilingLight:
     near_fade: float = 0.0
 
 
-def wall_strip(wall_h: float, cam_h: float, half_h: float, h: float,
-               dist: float) -> tuple[float, float]:
-    """Vertical screen span ``(strip_y, strip_h)`` of a wall at ``dist``.
-
-    Projects the wall as a solid from floor (z=0) to z=``wall_h`` using the
-    same plane projection as stairs/ramps (``y = half_h + (cam_h - z) * s``
-    with ``s = h / dist``).
-
-    Backward compatibility: with the legacy defaults ``wall_h == 1.0`` the
-    function returns the exact original centred-strip formula
-    (``strip_h = min(h, h/dist)``, vertically centred), bit-identical to the
-    pre-``wall_height`` renderer, regardless of ``cam_h``.
-    """
-    if wall_h == 1.0:
-        strip_h = min(h, h / max(dist, 0.001))
-        return (h - strip_h) / 2.0, strip_h
-    s = h / max(dist, 0.001)
-    y_bot = half_h + cam_h * s
-    strip_h = min(wall_h * s, 8.0 * h)
-    return y_bot - strip_h, strip_h
-
-
 class RaycastCanvas:
     """Wolfenstein-style raycasting 3D renderer backed by ``flet.canvas.Canvas``.
 
@@ -540,7 +517,6 @@ class RaycastCanvas:
         frame_height: Optional[float] = None,
         wall_textures: Optional[list] = None,
         camera_height: float = 0.5,
-        wall_height: float = 1.0,
         renderer: str = "canvas",
     ) -> None:
         self._width  = float(width)
@@ -557,7 +533,6 @@ class RaycastCanvas:
         self._fog    = fog_distance
         self._depth  = max_depth
         self._cam_h  = camera_height
-        self._wall_h = float(wall_height)
         self._renderer = self._resolve_renderer(renderer)
 
         # Sprite list — populated via set_sprites().  Each item is a SpriteDef.
@@ -585,10 +560,6 @@ class RaycastCanvas:
         self._stair_geom: list[list[_StepGeom]] = []
         self._stair_tread_fog: list[tuple[bytes, ...]] = []
         self._stair_riser_fog: list[tuple[bytes, ...]] = []
-        self._ramps: list[RampDef] = []
-        self._ramp_geom: list[_RampGeom] = []
-        self._ramp_surf_fog: list[tuple[bytes, ...]] = []
-        self._ramp_side_fog: list[tuple[bytes, ...]] = []
 
         # Frame-phase timings (exposed for the on-device diagnostics HUD).
         self._dbg_wall_ms: float = 0.0
@@ -650,11 +621,6 @@ class RaycastCanvas:
 
         # Per-column perpendicular wall distances (filled each frame).
         self._col_dists: list[float] = [0.0] * self._cols
-        # Per-column top height of the surface that owns _col_dists; sprites
-        # whose feet (z) are at/above that top are NOT occluded by it (a
-        # sprite standing on a step must not be hidden by its own step).
-        self._col_tops: list[float] = [1e9] * self._cols
-        self._col_ramp_id: list[int] = [-1] * self._cols
 
         # RawImage streaming state (used only by the optional rawimage backend).
         self._raw_image = None
@@ -1243,8 +1209,6 @@ class RaycastCanvas:
         _cast = self._cast
         _cols = self._cols
         col_dists = self._col_dists
-        col_tops = self._col_tops
-        col_ramp_id = self._col_ramp_id
         fog = self._fog
         ceil = self._ceil
         wcolors = self._wcolors
@@ -1306,9 +1270,9 @@ class RaycastCanvas:
             view_axis = cos_a * rdx + sin_a * rdy
             dist, wtype, side, wall_hit = _cast(px, py, rdx, rdy)
             col_dists[col] = dist
-            col_tops[col] = 1e9
 
-            strip_y, strip_h = wall_strip(self._wall_h, cam_h, half_h, h, dist)
+            strip_h = min(h, h / max(dist, 0.001))
+            strip_y = (h - strip_h) / 2.0
             idx = wtype - 1
             if idx < 0:
                 idx = 0
@@ -1532,11 +1496,14 @@ class RaycastCanvas:
                                 _hx = px + rdx * _t_near
                                 if sg.tread_x0 <= _hx <= sg.tread_x1:
                                     _t_body = _t_near
-                            if _t_body is None and rdx != 0.0:
-                                # Side entry only (x0 needs rdx>0, x1 rdx<0):
-                                # an exit crossing would overpaint the wall.
-                                for _ex, _sgn in ((sg.tread_x0, 1.0), (sg.tread_x1, -1.0)):
-                                    if rdx * _sgn > 0.0:
+                            if _t_body is None and 0.001 < _t_far < dist:
+                                _hx = px + rdx * _t_far
+                                if sg.tread_x0 <= _hx <= sg.tread_x1:
+                                    _t_body = _t_far
+                            if _t_body is None:
+                                # Ray might clip the side edge
+                                for _ex in (sg.tread_x0, sg.tread_x1):
+                                    if rdx != 0.0:
                                         _t_side = (_ex - px) / rdx
                                         if 0.001 < _t_side < dist:
                                             _hy = py + rdy * _t_side
@@ -1544,10 +1511,6 @@ class RaycastCanvas:
                                             if _a0 <= _hy <= _a1:
                                                 _t_body = _t_side
                                                 break
-                            if _t_body is None and 0.001 < _t_far < dist:
-                                _hx = px + rdx * _t_far
-                                if sg.tread_x0 <= _hx <= sg.tread_x1:
-                                    _t_body = _t_far
                         elif stair.axis == "x" and rdx != 0.0:
                             _t_front = (sg.riser_y - px) / rdx
                             _t_back  = (sg.riser_y + stair.run - px) / rdx
@@ -1557,9 +1520,13 @@ class RaycastCanvas:
                                 _hy = py + rdy * _t_near
                                 if sg.tread_x0 <= _hy <= sg.tread_x1:
                                     _t_body = _t_near
-                            if _t_body is None and rdy != 0.0:
-                                for _ey, _sgn in ((sg.tread_x0, 1.0), (sg.tread_x1, -1.0)):
-                                    if rdy * _sgn > 0.0:
+                            if _t_body is None and 0.001 < _t_far < dist:
+                                _hy = py + rdy * _t_far
+                                if sg.tread_x0 <= _hy <= sg.tread_x1:
+                                    _t_body = _t_far
+                            if _t_body is None:
+                                for _ey in (sg.tread_x0, sg.tread_x1):
+                                    if rdy != 0.0:
                                         _t_side = (_ey - py) / rdy
                                         if 0.001 < _t_side < dist:
                                             _hx = px + rdx * _t_side
@@ -1567,10 +1534,6 @@ class RaycastCanvas:
                                             if _a0 <= _hx <= _a1:
                                                 _t_body = _t_side
                                                 break
-                            if _t_body is None and 0.001 < _t_far < dist:
-                                _hy = py + rdy * _t_far
-                                if sg.tread_x0 <= _hy <= sg.tread_x1:
-                                    _t_body = _t_far
                         if _t_body is not None and 0.001 < _t_body < dist:
                             _body_ok = False
                             if stair.axis == "y":
@@ -1602,9 +1565,6 @@ class RaycastCanvas:
                                         frame[a+1:b+1:stride] = rgba[1:2] * n
                                         frame[a+2:b+2:stride] = rgba[2:3] * n
                                         frame[a+3:b+3:stride] = rgba[3:4] * n
-                                        if perp < col_dists[col]:
-                                            col_dists[col] = perp
-                                            col_tops[col] = sg.riser_h1
                                         # Shadow under tread lip: 2px
                                         # dark band at the top of the riser.
                                         shadow_y = int(yr_top)
@@ -1695,251 +1655,6 @@ class RaycastCanvas:
                                             frame[a+1:b+1:stride] = rgba[1:2] * n
                                             frame[a+2:b+2:stride] = rgba[2:3] * n
                                             frame[a+3:b+3:stride] = rgba[3:4] * n
-                                            if _pe < col_dists[col]:
-                                                col_dists[col] = _pe
-                                                col_tops[col] = sg.tread_height
-                    # ── Side panels: per-step vertical faces at tread_x0 / tread_x1 ──
-                    # Each step has a side face whose height ramps from
-                    # riser_h0 (front) to riser_h1 (back), giving a
-                    # correct stepped profile rather than a smooth wedge.
-                    _sg0 = step_geom_list[0]
-                    for _side_x, _sgn in ((_sg0.tread_x0, 1.0), (_sg0.tread_x1, -1.0)):
-                        for sg in step_geom_list:
-                            if stair.axis == "y":
-                                if rdx * _sgn <= 0.0:
-                                    continue
-                                _t_sp = (_side_x - px) / rdx
-                            else:
-                                if rdy * _sgn <= 0.0:
-                                    continue
-                                _t_sp = (_side_x - py) / rdy
-                            if not (0.001 < _t_sp < dist):
-                                continue
-                            if stair.axis == "y":
-                                _hit_a = py + rdy * _t_sp
-                            else:
-                                _hit_a = px + rdx * _t_sp
-                            if not (sg.tread_y0 <= _hit_a <= sg.tread_y1):
-                                continue
-                            _side_h = sg.riser_h1
-                            if _side_h <= 0.0:
-                                continue
-                            _perp = _t_sp * view_axis
-                            if _perp < 0.01:
-                                continue
-                            _sc = h / _perp
-                            _ys_top = half_h + (cam_h - _side_h) * _sc
-                            _ys_bot = half_h + cam_h * _sc
-                            if _ys_top > _ys_bot:
-                                _ys_top, _ys_bot = _ys_bot, _ys_top
-                            _yy0 = max(0, int(_ys_top))
-                            _yy1 = min(height, int(_ys_bot) + 1)
-                            if _yy1 <= _yy0:
-                                continue
-                            if lut is not None:
-                                _sd = int(min(1.0, _perp / fog) * 0.6 * fog_steps)
-                                if _sd > fog_steps:
-                                    _sd = fog_steps
-                                _panel_rgba = riser_fog[_sd]
-                            else:
-                                _panel_rgba = riser_fog[0]
-                            _a = _yy0 * stride + col * 4
-                            _b = _yy1 * stride + col * 4
-                            _n = _yy1 - _yy0
-                            frame[_a:_b:stride] = _panel_rgba[0:1] * _n
-                            frame[_a+1:_b+1:stride] = _panel_rgba[1:2] * _n
-                            frame[_a+2:_b+2:stride] = _panel_rgba[2:3] * _n
-                            frame[_a+3:_b+3:stride] = _panel_rgba[3:4] * _n
-                            if _perp < col_dists[col]:
-                                col_dists[col] = _perp
-                                col_tops[col] = sg.riser_h1
-
-            # ── Ramps: sloped surface + side panels + back face (rawimage) ──
-            if self._ramp_geom:
-                for ri, rg in enumerate(self._ramp_geom):
-                    ramp = self._ramps[ri]
-                    surf_fog = self._ramp_surf_fog[ri]
-                    side_fog = self._ramp_side_fog[ri]
-                    if ramp.axis == "y":
-                        if rdy != 0.0:
-                            _ra0 = (rg.a0 - py) / rdy
-                            _ra1 = (rg.a1 - py) / rdy
-                            _ta_n = min(_ra0, _ra1)
-                            _ta_f = max(_ra0, _ra1)
-                        else:
-                            _in = rg.a0 <= py <= rg.a1
-                            _ta_n = -1e18 if _in else 1e18
-                            _ta_f = 1e18 if _in else -1e18
-                        if rdx != 0.0:
-                            _c0 = (rg.x0 - px) / rdx
-                            _c1 = (rg.x1 - px) / rdx
-                            _tc_n = min(_c0, _c1)
-                            _tc_f = max(_c0, _c1)
-                        else:
-                            _in = rg.x0 <= px <= rg.x1
-                            _tc_n = -1e18 if _in else 1e18
-                            _tc_f = 1e18 if _in else -1e18
-                    else:
-                        if rdx != 0.0:
-                            _ra0 = (rg.a0 - px) / rdx
-                            _ra1 = (rg.a1 - px) / rdx
-                            _ta_n = min(_ra0, _ra1)
-                            _ta_f = max(_ra0, _ra1)
-                        else:
-                            _in = rg.a0 <= px <= rg.a1
-                            _ta_n = -1e18 if _in else 1e18
-                            _ta_f = 1e18 if _in else -1e18
-                        if rdy != 0.0:
-                            _c0 = (rg.x0 - py) / rdy
-                            _c1 = (rg.x1 - py) / rdy
-                            _tc_n = min(_c0, _c1)
-                            _tc_f = max(_c0, _c1)
-                        else:
-                            _in = rg.x0 <= py <= rg.x1
-                            _tc_n = -1e18 if _in else 1e18
-                            _tc_f = 1e18 if _in else -1e18
-                    _te = max(_ta_n, _tc_n)
-                    _tx = min(_ta_f, _tc_f)
-                    if _te < _tx and _te < dist:
-                        _te = max(0.002, _te)
-                        _tx = min(dist - 0.002, _tx)
-                        if _te < _tx:
-                            _pe = _te * view_axis
-                            _pf = _tx * view_axis
-                            if _pe > 0.01 and _pf > 0.01:
-                                if ramp.axis == "y":
-                                    _al_e = py + rdy * _te
-                                    _al_f = py + rdy * _tx
-                                else:
-                                    _al_e = px + rdx * _te
-                                    _al_f = px + rdx * _tx
-                                if _al_e < rg.a0:
-                                    _al_e = rg.a0
-                                elif _al_e > rg.a1:
-                                    _al_e = rg.a1
-                                if _al_f < rg.a0:
-                                    _al_f = rg.a0
-                                elif _al_f > rg.a1:
-                                    _al_f = rg.a1
-                                _ze = rg.slope * (_al_e - rg.a0)
-                                _zf = rg.slope * (_al_f - rg.a0)
-                                _se = h / _pe
-                                _sf = h / _pf
-                                _ye = half_h + (cam_h - _ze) * _se
-                                _yf = half_h + (cam_h - _zf) * _sf
-                                _yy0 = max(0, int(min(_ye, _yf)))
-                                _yy1 = min(height, int(max(_ye, _yf)) + 1)
-                                if _yy1 > _yy0:
-                                    if lut is not None:
-                                        _d = int(min(1.0, _pe / fog) * 0.6 * fog_steps)
-                                        if _d > fog_steps:
-                                            _d = fog_steps
-                                        rgba = surf_fog[_d]
-                                    else:
-                                        rgba = surf_fog[0]
-                                    a = _yy0 * stride + col * 4
-                                    b = _yy1 * stride + col * 4
-                                    n = _yy1 - _yy0
-                                    frame[a:b:stride] = rgba[0:1] * n
-                                    frame[a+1:b+1:stride] = rgba[1:2] * n
-                                    frame[a+2:b+2:stride] = rgba[2:3] * n
-                                    frame[a+3:b+3:stride] = rgba[3:4] * n
-                                    if _pe < col_dists[col]:
-                                        col_dists[col] = _pe
-                                        col_tops[col] = _ze if _ze > _zf else _zf
-                                        col_ramp_id[col] = ri
-                    # Side panels: triangular profile, entry-only crossings.
-                    for _side_x, _sgn in ((rg.x0, 1.0), (rg.x1, -1.0)):
-                        if ramp.axis == "y":
-                            if rdx * _sgn <= 0.0:
-                                continue
-                            _t_sp = (_side_x - px) / rdx
-                            _hit_a = py + rdy * _t_sp
-                        else:
-                            if rdy * _sgn <= 0.0:
-                                continue
-                            _t_sp = (_side_x - py) / rdy
-                            _hit_a = px + rdx * _t_sp
-                        if not (0.001 < _t_sp < dist):
-                            continue
-                        if not (rg.a0 <= _hit_a <= rg.a1):
-                            continue
-                        _top = rg.slope * (_hit_a - rg.a0)
-                        if _top <= 0.0:
-                            continue
-                        _perp = _t_sp * view_axis
-                        if _perp < 0.01:
-                            continue
-                        _sc = h / _perp
-                        _ys_top = half_h + (cam_h - _top) * _sc
-                        _ys_bot = half_h + cam_h * _sc
-                        if _ys_top > _ys_bot:
-                            _ys_top, _ys_bot = _ys_bot, _ys_top
-                        _yy0 = max(0, int(_ys_top))
-                        _yy1 = min(height, int(_ys_bot) + 1)
-                        if _yy1 <= _yy0:
-                            continue
-                        if lut is not None:
-                            _sd = int(min(1.0, _perp / fog) * 0.6 * fog_steps)
-                            if _sd > fog_steps:
-                                _sd = fog_steps
-                            _prgba = side_fog[_sd]
-                        else:
-                            _prgba = side_fog[0]
-                        _a = _yy0 * stride + col * 4
-                        _b = _yy1 * stride + col * 4
-                        _n = _yy1 - _yy0
-                        frame[_a:_b:stride] = _prgba[0:1] * _n
-                        frame[_a+1:_b+1:stride] = _prgba[1:2] * _n
-                        frame[_a+2:_b+2:stride] = _prgba[2:3] * _n
-                        frame[_a+3:_b+3:stride] = _prgba[3:4] * _n
-                        if _perp < col_dists[col]:
-                            col_dists[col] = _perp
-                            col_tops[col] = _top
-                            col_ramp_id[col] = ri
-                    # Back face: vertical 0..height at the back edge.
-                    if ramp.axis == "y":
-                        _tb = (rg.a1 - py) / rdy if rdy < 0.0 else -1.0
-                        if 0.001 < _tb < dist:
-                            _hx = px + rdx * _tb
-                            _ok = rg.x0 <= _hx <= rg.x1
-                        else:
-                            _ok = False
-                    else:
-                        _tb = (rg.a1 - px) / rdx if rdx < 0.0 else -1.0
-                        if 0.001 < _tb < dist:
-                            _hy = py + rdy * _tb
-                            _ok = rg.x0 <= _hy <= rg.x1
-                        else:
-                            _ok = False
-                    if _ok:
-                        _perp = _tb * view_axis
-                        if _perp > 0.01:
-                            _sc = h / _perp
-                            _yb_top = half_h + (cam_h - rg.height) * _sc
-                            _yb_bot = half_h + cam_h * _sc
-                            if _yb_top > _yb_bot:
-                                _yb_top, _yb_bot = _yb_bot, _yb_top
-                            _yy0 = max(0, int(_yb_top))
-                            _yy1 = min(height, int(_yb_bot) + 1)
-                            if _yy1 > _yy0:
-                                if lut is not None:
-                                    _d = int(min(1.0, _perp / fog) * 0.6 * fog_steps)
-                                    if _d > fog_steps:
-                                        _d = fog_steps
-                                    _brgba = side_fog[_d]
-                                else:
-                                    _brgba = side_fog[0]
-                                _a = _yy0 * stride + col * 4
-                                _b = _yy1 * stride + col * 4
-                                _n = _yy1 - _yy0
-                                frame[_a:_b:stride] = _brgba[0:1] * _n
-                                frame[_a+1:_b+1:stride] = _brgba[1:2] * _n
-                                frame[_a+2:_b+2:stride] = _brgba[2:3] * _n
-                                frame[_a+3:_b+3:stride] = _brgba[3:4] * _n
-                                if _perp < col_dists[col]:
-                                    col_dists[col] = _perp
-                                    col_tops[col] = rg.height
 
             # ── Flat floor decor + ceiling lights (rawimage only) ─────────
             # Rasterized per column into the framebuffer so they are atomic
@@ -2072,8 +1787,6 @@ class RaycastCanvas:
         stride = fb_w * 4
         scale_y = fb_h / self._height
         col_dists = self._col_dists
-        col_tops = self._col_tops
-        col_ramp_id = self._col_ramp_id
         cols = self._cols
         # Viewport x → framebuffer column (1 px per cast column).
         inv_col_w = 1.0 / col_w if col_w else 1.0
@@ -2106,11 +1819,9 @@ class RaycastCanvas:
             if span_x <= 0 or span_y <= 0:
                 continue
             # Fixed-point tex coords: u = (col + 0.5 - x0) / span_x
-            on_r = self._ramp_id_at(sprite.x, sprite.y, sprite.z)
             for col in range(c0, c1 + 1):
-                if col_dists[col] < dist and col_tops[col] > sprite.z + 1e-6:
-                    if not (on_r != -1 and col_ramp_id[col] == on_r):
-                        continue
+                if col_dists[col] < dist:
+                    continue
                 u = (col + 0.5 - x0) / span_x
                 if u < 0.0 or u >= 1.0:
                     continue
@@ -2316,7 +2027,7 @@ class RaycastCanvas:
             else:
                 self._stair_riser_fog.append((_rgba(s.riser_color),))
         # Re-allocate canvas stair shapes if the pool is too small.
-        total = sum(len(g) for g in self._stair_geom) * 3 + len(self._stair_geom) * 2  # tread + riser + edge + 2 side panels
+        total = sum(len(g) for g in self._stair_geom) * 3  # tread + riser + edge
         if total > len(self._stair_shapes):
             self._stair_paints = [ft.Paint(color=_TRANSPARENT) for _ in range(total)]
             self._stair_shapes = [
@@ -2324,77 +2035,6 @@ class RaycastCanvas:
                 for i in range(total)
             ]
         self._raw_last_key = None
-
-    def set_ramps(self, ramps: Optional[list[RampDef]] = None) -> None:
-        """Replace the ramp decor (both backends).
-
-        Each :class:`RampDef` is rendered as a sloped top surface, triangular
-        side panels (entry-only, like stair sides) and a vertical back face.
-        ``stair_height_at`` reports the continuous ramp height so cameras and
-        sprites ride the slope.
-        """
-        self._ramps = ramps if ramps is not None else []
-        self._ramp_geom = [build_ramp_geom(r) for r in self._ramps]
-        self._ramp_surf_fog = []
-        self._ramp_side_fog = []
-        for r in self._ramps:
-            if self._fog_lut is not None:
-                self._ramp_surf_fog.append(tuple(
-                    _rgba(_blend(r.color, self._ceil, step / _FOG_STEPS))
-                    for step in range(_FOG_STEPS + 1)
-                ))
-                self._ramp_side_fog.append(tuple(
-                    _rgba(_blend(r.side_color, self._ceil, step / _FOG_STEPS))
-                    for step in range(_FOG_STEPS + 1)
-                ))
-            else:
-                self._ramp_surf_fog.append((_rgba(r.color),))
-                self._ramp_side_fog.append((_rgba(r.side_color),))
-        self._raw_last_key = None
-
-    def _ramp_id_at(self, x: float, y: float, z: float) -> int:
-        """Index of the ramp whose surface is exactly under (x, y, z), else -1."""
-        for ri, rg in enumerate(self._ramp_geom):
-            ramp = self._ramps[ri]
-            along = y if ramp.axis == "y" else x
-            perp = x if ramp.axis == "y" else y
-            if rg.x0 <= perp <= rg.x1 and rg.a0 <= along <= rg.a1:
-                if abs(z - rg.slope * (along - rg.a0)) < 1e-4:
-                    return ri
-        return -1
-
-    def stair_height_at(self, x: float, y: float) -> float:
-        """Return the world height at position (x, y) if on a stair, else 0.0.
-
-        Checks all stair footprints and returns the tread height of the
-        highest step whose footprint contains (x, y).  Useful for raising
-        the camera when the player walks onto stairs.
-        """
-        result = 0.0
-        for si, step_geom_list in enumerate(self._stair_geom):
-            stair = self._stairs[si]
-            for sg in step_geom_list:
-                if stair.axis == "y":
-                    if sg.tread_x0 <= x <= sg.tread_x1 and sg.tread_y0 <= y <= sg.tread_y1:
-                        result = max(result, sg.tread_height)
-                else:
-                    if sg.tread_x0 <= y <= sg.tread_x1 and sg.tread_y0 <= x <= sg.tread_y1:
-                        result = max(result, sg.tread_height)
-        for ri, rg in enumerate(self._ramp_geom):
-            ramp = self._ramps[ri]
-            along = y if ramp.axis == "y" else x
-            perp = x if ramp.axis == "y" else y
-            if rg.x0 <= perp <= rg.x1 and rg.a0 <= along <= rg.a1:
-                result = max(result, rg.slope * (along - rg.a0))
-        return result
-
-    def set_camera_height(self, height: float) -> None:
-        """Update the camera (eye) height in world units.
-
-        Call before ``render()`` to raise/lower the viewpoint — e.g. when
-        the player walks onto stairs.
-        """
-        self._cam_h = height
 
     def clear_frame(self) -> None:
         """Blank the view: push one opaque black frame and hide sprites.
@@ -2455,8 +2095,6 @@ class RaycastCanvas:
         self._init_wall_shapes()
         self._build_ray_table()
         self._col_dists = [0.0] * self._cols
-        self._col_tops = [1e9] * self._cols
-        self._col_ramp_id = [-1] * self._cols
         self._rebuild_raw_frame_template()
 
     @property
@@ -2496,13 +2134,6 @@ class RaycastCanvas:
         self._stair_shapes = [
             cv.Rect(x=0, y=0, width=0, height=0, paint=self._stair_paints[i])
             for i in range(n_stair)
-        ]
-        # Pre-allocate ramp shapes (surface + 2 sides + back per column).
-        n_ramp = 4 * self._cols
-        self._ramp_paints = [ft.Paint(color=_TRANSPARENT) for _ in range(n_ramp)]
-        self._ramp_shapes = [
-            cv.Rect(x=0, y=0, width=0, height=0, paint=self._ramp_paints[i])
-            for i in range(n_ramp)
         ]
         # Rebuild the persistent shapes list to include the new wall shapes.
         self._shapes = list(self._wall_shapes)
@@ -2732,7 +2363,6 @@ class RaycastCanvas:
             sin_a = math.sin(angle)
             used_decals = 0
             used_stairs = 0
-            used_ramps = 0
             for col in range(self._cols):
                 cd, sd = table[col]
                 rdx = cos_a * cd - sin_a * sd
@@ -2740,11 +2370,9 @@ class RaycastCanvas:
                 view_axis = cos_a * rdx + sin_a * rdy
                 dist, wtype, side, wall_hit = _cast(px, py, rdx, rdy)
                 self._col_dists[col] = dist
-                self._col_tops[col] = 1e9
 
-                strip_y, strip_h = wall_strip(self._wall_h, self._cam_h,
-                                              self._height / 2.0,
-                                              self._height, dist)
+                strip_h = min(self._height, self._height / max(dist, 0.001))
+                strip_y = (self._height - strip_h) / 2.0
                 strip_x = col * col_w
 
                 idx = max(0, min(wtype - 1, len(self._wcolors) - 1))
@@ -2865,9 +2493,6 @@ class RaycastCanvas:
                                             sr.height = max(1, _yr_bot - _yr_top)
                                             self._stair_paints[used_stairs].color = _tc
                                             used_stairs += 1
-                                            if _pe < self._col_dists[col]:
-                                                self._col_dists[col] = _pe
-                                                self._col_tops[col] = sg.tread_height
                             # --- Riser ---
                             if self._cam_h >= sg.riser_h1:
                                 continue
@@ -2910,9 +2535,6 @@ class RaycastCanvas:
                             sr.height = max(1, yr_bot - yr_top)
                             self._stair_paints[used_stairs].color = _rc
                             used_stairs += 1
-                            if perp < self._col_dists[col]:
-                                self._col_dists[col] = perp
-                                self._col_tops[col] = sg.riser_h1
                             # Edge highlight (3px at riser top)
                             if used_stairs < len(self._stair_shapes):
                                 er = self._stair_shapes[used_stairs]
@@ -2922,219 +2544,6 @@ class RaycastCanvas:
                                 er.height = min(3, max(1, yr_bot - yr_top))
                                 self._stair_paints[used_stairs].color = _ec
                                 used_stairs += 1
-                    # --- Side panels: per-step vertical faces at tread_x0 / tread_x1 ---
-                    _sg0 = step_geom_list[0]
-                    for _side_x, _sgn in ((_sg0.tread_x0, 1.0), (_sg0.tread_x1, -1.0)):
-                        for sg in step_geom_list:
-                            if stair.axis == "y":
-                                if rdx * _sgn <= 0.0:
-                                    continue
-                                _t_sp = (_side_x - px) / rdx
-                            else:
-                                if rdy * _sgn <= 0.0:
-                                    continue
-                                _t_sp = (_side_x - py) / rdy
-                            if not (0.001 < _t_sp < dist):
-                                continue
-                            if stair.axis == "y":
-                                _hit_a = py + rdy * _t_sp
-                            else:
-                                _hit_a = px + rdx * _t_sp
-                            if not (sg.tread_y0 <= _hit_a <= sg.tread_y1):
-                                continue
-                            _side_h = sg.riser_h1
-                            if _side_h <= 0.0:
-                                continue
-                            _perp = _t_sp * view_axis
-                            if _perp < 0.01 or used_stairs >= len(self._stair_shapes):
-                                continue
-                            if lut is not None:
-                                _sd = min(_FOG_STEPS, int(_perp * _FOG_STEPS / self._fog))
-                                _sc = _blend(stair.riser_color, self._ceil, _sd / _FOG_STEPS)
-                            else:
-                                _sc = stair.riser_color
-                            _scale = self._height / _perp
-                            _ys_top = half_h + (self._cam_h - _side_h) * _scale
-                            _ys_bot = half_h + self._cam_h * _scale
-                            if _ys_top > _ys_bot:
-                                _ys_top, _ys_bot = _ys_bot, _ys_top
-                            sr = self._stair_shapes[used_stairs]
-                            sr.x = strip_x
-                            sr.y = _ys_top
-                            sr.width = col_w + 1
-                            sr.height = max(1, _ys_bot - _ys_top)
-                            self._stair_paints[used_stairs].color = _sc
-                            used_stairs += 1
-                            if _perp < self._col_dists[col]:
-                                self._col_dists[col] = _perp
-                                self._col_tops[col] = sg.riser_h1
-
-                # ── Ramps (canvas fallback) ─────────────────────────────────
-                if self._ramp_geom:
-                    for ri, rg in enumerate(self._ramp_geom):
-                        ramp = self._ramps[ri]
-                        if ramp.axis == "y":
-                            if rdy != 0.0:
-                                _ra0 = (rg.a0 - py) / rdy
-                                _ra1 = (rg.a1 - py) / rdy
-                                _ta_n = min(_ra0, _ra1)
-                                _ta_f = max(_ra0, _ra1)
-                            else:
-                                _in = rg.a0 <= py <= rg.a1
-                                _ta_n = -1e18 if _in else 1e18
-                                _ta_f = 1e18 if _in else -1e18
-                            if rdx != 0.0:
-                                _c0 = (rg.x0 - px) / rdx
-                                _c1 = (rg.x1 - px) / rdx
-                                _tc_n = min(_c0, _c1)
-                                _tc_f = max(_c0, _c1)
-                            else:
-                                _in = rg.x0 <= px <= rg.x1
-                                _tc_n = -1e18 if _in else 1e18
-                                _tc_f = 1e18 if _in else -1e18
-                        else:
-                            if rdx != 0.0:
-                                _ra0 = (rg.a0 - px) / rdx
-                                _ra1 = (rg.a1 - px) / rdx
-                                _ta_n = min(_ra0, _ra1)
-                                _ta_f = max(_ra0, _ra1)
-                            else:
-                                _in = rg.a0 <= px <= rg.a1
-                                _ta_n = -1e18 if _in else 1e18
-                                _ta_f = 1e18 if _in else -1e18
-                            if rdy != 0.0:
-                                _c0 = (rg.x0 - py) / rdy
-                                _c1 = (rg.x1 - py) / rdy
-                                _tc_n = min(_c0, _c1)
-                                _tc_f = max(_c0, _c1)
-                            else:
-                                _in = rg.x0 <= py <= rg.x1
-                                _tc_n = -1e18 if _in else 1e18
-                                _tc_f = 1e18 if _in else -1e18
-                        _te = max(_ta_n, _tc_n)
-                        _tx = min(_ta_f, _tc_f)
-                        if _te < _tx and _te < dist:
-                            _te = max(0.002, _te)
-                            _tx = min(dist - 0.002, _tx)
-                            if _te < _tx:
-                                _pe = _te * view_axis
-                                _pf = _tx * view_axis
-                                if _pe > 0.01 and _pf > 0.01 and used_ramps < len(self._ramp_shapes):
-                                    if ramp.axis == "y":
-                                        _al_e = py + rdy * _te
-                                        _al_f = py + rdy * _tx
-                                    else:
-                                        _al_e = px + rdx * _te
-                                        _al_f = px + rdx * _tx
-                                    if _al_e < rg.a0:
-                                        _al_e = rg.a0
-                                    elif _al_e > rg.a1:
-                                        _al_e = rg.a1
-                                    if _al_f < rg.a0:
-                                        _al_f = rg.a0
-                                    elif _al_f > rg.a1:
-                                        _al_f = rg.a1
-                                    _ze = rg.slope * (_al_e - rg.a0)
-                                    _zf = rg.slope * (_al_f - rg.a0)
-                                    _se = self._height / _pe
-                                    _sf = self._height / _pf
-                                    _ye = half_h + (self._cam_h - _ze) * _se
-                                    _yf = half_h + (self._cam_h - _zf) * _sf
-                                    if lut is not None:
-                                        _d = min(_FOG_STEPS, int(_pe * _FOG_STEPS / self._fog))
-                                        _rcol = _blend(ramp.color, self._ceil, _d / _FOG_STEPS)
-                                    else:
-                                        _rcol = ramp.color
-                                    sr = self._ramp_shapes[used_ramps]
-                                    sr.x = strip_x
-                                    sr.y = min(_ye, _yf)
-                                    sr.width = col_w + 1
-                                    sr.height = max(1, abs(_ye - _yf))
-                                    self._ramp_paints[used_ramps].color = _rcol
-                                    used_ramps += 1
-                                    if _pe < self._col_dists[col]:
-                                        self._col_dists[col] = _pe
-                                        self._col_tops[col] = _ze if _ze > _zf else _zf
-                                        self._col_ramp_id[col] = ri
-                        for _side_x, _sgn in ((rg.x0, 1.0), (rg.x1, -1.0)):
-                            if ramp.axis == "y":
-                                if rdx * _sgn <= 0.0:
-                                    continue
-                                _t_sp = (_side_x - px) / rdx
-                                _hit_a = py + rdy * _t_sp
-                            else:
-                                if rdy * _sgn <= 0.0:
-                                    continue
-                                _t_sp = (_side_x - py) / rdy
-                                _hit_a = px + rdx * _t_sp
-                            if not (0.001 < _t_sp < dist):
-                                continue
-                            if not (rg.a0 <= _hit_a <= rg.a1):
-                                continue
-                            _top = rg.slope * (_hit_a - rg.a0)
-                            if _top <= 0.0:
-                                continue
-                            _perp = _t_sp * view_axis
-                            if _perp < 0.01 or used_ramps >= len(self._ramp_shapes):
-                                continue
-                            if lut is not None:
-                                _sd = min(_FOG_STEPS, int(_perp * _FOG_STEPS / self._fog))
-                                _scol = _blend(ramp.side_color, self._ceil, _sd / _FOG_STEPS)
-                            else:
-                                _scol = ramp.side_color
-                            _sc = self._height / _perp
-                            _ys_top = half_h + (self._cam_h - _top) * _sc
-                            _ys_bot = half_h + self._cam_h * _sc
-                            if _ys_top > _ys_bot:
-                                _ys_top, _ys_bot = _ys_bot, _ys_top
-                            sr = self._ramp_shapes[used_ramps]
-                            sr.x = strip_x
-                            sr.y = _ys_top
-                            sr.width = col_w + 1
-                            sr.height = max(1, _ys_bot - _ys_top)
-                            self._ramp_paints[used_ramps].color = _scol
-                            used_ramps += 1
-                            if _perp < self._col_dists[col]:
-                                self._col_dists[col] = _perp
-                                self._col_tops[col] = _top
-                                self._col_ramp_id[col] = ri
-                        if ramp.axis == "y":
-                            _tb = (rg.a1 - py) / rdy if rdy < 0.0 else -1.0
-                            if 0.001 < _tb < dist:
-                                _hx = px + rdx * _tb
-                                _ok = rg.x0 <= _hx <= rg.x1
-                            else:
-                                _ok = False
-                        else:
-                            _tb = (rg.a1 - px) / rdx if rdx < 0.0 else -1.0
-                            if 0.001 < _tb < dist:
-                                _hy = py + rdy * _tb
-                                _ok = rg.x0 <= _hy <= rg.x1
-                            else:
-                                _ok = False
-                        if _ok and used_ramps < len(self._ramp_shapes):
-                            _perp = _tb * view_axis
-                            if _perp > 0.01:
-                                if lut is not None:
-                                    _d = min(_FOG_STEPS, int(_perp * _FOG_STEPS / self._fog))
-                                    _bcol = _blend(ramp.side_color, self._ceil, _d / _FOG_STEPS)
-                                else:
-                                    _bcol = ramp.side_color
-                                _sc = self._height / _perp
-                                _yb_top = half_h + (self._cam_h - rg.height) * _sc
-                                _yb_bot = half_h + self._cam_h * _sc
-                                if _yb_top > _yb_bot:
-                                    _yb_top, _yb_bot = _yb_bot, _yb_top
-                                sr = self._ramp_shapes[used_ramps]
-                                sr.x = strip_x
-                                sr.y = _yb_top
-                                sr.width = col_w + 1
-                                sr.height = max(1, _yb_bot - _yb_top)
-                                self._ramp_paints[used_ramps].color = _bcol
-                                used_ramps += 1
-                                if _perp < self._col_dists[col]:
-                                    self._col_dists[col] = _perp
-                                    self._col_tops[col] = rg.height
 
         # ── Sprite rendering (billboard sprites, depth-sorted back-to-front) ──
         _t1 = _time.perf_counter()
@@ -3180,12 +2589,9 @@ class RaycastCanvas:
         for dist, sx, sw, sh, sy, sprite in visible:
             c0 = max(0, int(sx / col_w))
             c1 = min(self._cols - 1, int((sx + sw) / col_w))
-            on_r = self._ramp_id_at(sprite.x, sprite.y, sprite.z)
             fully_hidden = True
             for c in range(c0, c1 + 1):
-                if (self._col_dists[c] >= dist
-                        or self._col_tops[c] <= sprite.z + 1e-6
-                        or (on_r != -1 and self._col_ramp_id[c] == on_r)):
+                if self._col_dists[c] >= dist:
                     fully_hidden = False
                     break
             if not fully_hidden:
@@ -3257,12 +2663,9 @@ class RaycastCanvas:
                 c0 = max(0, int(sx / col_w))
                 c1 = min(self._cols - 1, int((sx + sw) / col_w))
                 sid = id(sprite)
-                on_r = self._ramp_id_at(sprite.x, sprite.y, sprite.z)
                 hidden = 0
                 for c in range(c0, c1 + 1):
-                    if (self._col_dists[c] < dist
-                            and self._col_tops[c] > sprite.z + 1e-6
-                            and not (on_r != -1 and self._col_ramp_id[c] == on_r)):
+                    if self._col_dists[c] < dist:
                         hidden += 1
                 treat_full = hidden < self._MODE_HUNT_HIDDEN
                 self._sprite_mode[sid] = "w" if treat_full else "s"
@@ -3278,11 +2681,7 @@ class RaycastCanvas:
                 else:
                     seg_start = None
                     for c in range(c0, c1 + 1):
-                        col_visible = (
-                            self._col_dists[c] >= dist
-                            or self._col_tops[c] <= sprite.z + 1e-6
-                            or (on_r != -1 and self._col_ramp_id[c] == on_r)
-                        )
+                        col_visible = self._col_dists[c] >= dist
                         if col_visible and seg_start is None:
                             seg_start = c
                         elif not col_visible and seg_start is not None:
@@ -3355,12 +2754,8 @@ class RaycastCanvas:
             stair_start = decal_end
             stair_end = stair_start + used_stairs
             self._shapes[stair_start:stair_end] = self._stair_shapes[:used_stairs]
-            # Add ramp shapes after stair shapes
-            ramp_start = stair_end
-            ramp_end = ramp_start + used_ramps
-            self._shapes[ramp_start:ramp_end] = self._ramp_shapes[:used_ramps]
-            # Add shadow shapes after ramp shapes
-            shadow_start = ramp_end
+            # Add shadow shapes after stair shapes
+            shadow_start = stair_end
             shadow_end = shadow_start + (used_shadows if used_shadows > 0 else 0)
             self._shapes[shadow_start:shadow_end] = self._shadow_shapes[:used_shadows]
             # Trim any leftover shapes from a previous frame

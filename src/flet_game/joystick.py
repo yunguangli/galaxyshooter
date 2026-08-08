@@ -40,6 +40,7 @@ class VirtualJoystick:
         guide_border_color: str = "#ffffff12",
         drag_interval: int = 16,
         refresh_rate: float = 30.0,
+        stale_timeout: float = 1.5,
     ) -> None:
         self._width = float(width)
         self._height = float(height)
@@ -50,6 +51,14 @@ class VirtualJoystick:
         self._drag_interval = int(drag_interval)
         self._refresh_min_interval: float = 1.0 / max(1.0, float(refresh_rate))
         self._last_refresh: float = 0.0
+        # Tap-release safety net: on_pan_down fires before Flutter's gesture
+        # arena decides whether the touch is a pan, so a quick TAP never
+        # receives on_pan_end/on_pan_cancel and would leave _held stuck.  The
+        # on_tap_up handler resets it, and stale_timeout is a backstop for
+        # any arena edge case — axes read as 0 once the stick has been
+        # untouched for that many seconds.
+        self._stale_timeout: float = max(0.1, float(stale_timeout))
+        self._last_activity: float = 0.0
 
         self._vx: float = 0.0
         self._vy: float = 0.0
@@ -99,6 +108,7 @@ class VirtualJoystick:
             on_pan_update=self._on_update,
             on_pan_end=self._on_end,
             on_pan_cancel=self._on_end,
+            on_tap_up=self._on_tap_up,
             content=ft.Container(
                 width=self._width,
                 height=self._height,
@@ -117,11 +127,32 @@ class VirtualJoystick:
         return self._held
 
     @property
+    def last_activity(self) -> float:
+        """``time.monotonic()`` timestamp of the last touch/pan activity."""
+        return self._last_activity
+
+    @property
+    def is_stale(self) -> bool:
+        """True when the stick reports held but has seen no activity recently.
+
+        Covers the tap case where Flutter's gesture arena decided the touch
+        was not a pan, so ``on_pan_end`` never fired.  A game loop can call
+        :meth:`reset` to clear the stuck state (axes + visuals).
+        """
+        return self._held and (
+            time.monotonic() - self._last_activity > self._stale_timeout
+        )
+
+    @property
     def vx(self) -> float:
+        if self.is_stale:
+            return 0.0
         return 0.0 if abs(self._vx) < self._dead else self._vx
 
     @property
     def vy(self) -> float:
+        if self.is_stale:
+            return 0.0
         return 0.0 if abs(self._vy) < self._dead else self._vy
 
     @property
@@ -157,7 +188,9 @@ class VirtualJoystick:
         self._allow_flush = True
         try:
             from .loop import batch_active
+            from .loop import mark_frame_dirty
             if batch_active():
+                mark_frame_dirty()
                 return
         except ImportError:
             pass
@@ -165,6 +198,7 @@ class VirtualJoystick:
 
     def _apply_axes(self, px: float, py: float) -> None:
         """Compute axes from pointer position relative to the zone CENTER."""
+        self._last_activity = time.monotonic()
         dx = px - self._cx_zone
         dy = py - self._cy_zone
         dist = math.hypot(dx, dy)
@@ -184,6 +218,7 @@ class VirtualJoystick:
         Anchor at the CENTER and compute axes from the touch position.
         This gives instant direction without waiting for on_pan_update.
         """
+        self._last_activity = time.monotonic()
         pos = getattr(e, "local_position", None)
         if pos is None:
             return
@@ -193,6 +228,7 @@ class VirtualJoystick:
         self._schedule_refresh(force=True)
 
     def _on_start(self, e: ft.DragStartEvent) -> None:
+        self._last_activity = time.monotonic()
         self._held = True
         self._base.visible = self._knob.visible = True
         self._schedule_refresh(force=True)
@@ -206,6 +242,10 @@ class VirtualJoystick:
         if delta is None:
             return
         self._apply_axes(self._cx_zone + float(delta.x), self._cy_zone + float(delta.y))
+
+    def _on_tap_up(self, _e) -> None:
+        """A tap (not a pan) left the arena without on_pan_end — release."""
+        self._on_end(None)
 
     def _on_end(self, _e) -> None:
         self._held = False

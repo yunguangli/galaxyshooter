@@ -210,6 +210,15 @@ class Game:
         """Resume a paused game loop."""
         self._loop.resume()
 
+    def quit(self) -> None:
+        """Stop the loop and close the app window (ESC-quit).
+
+        Use from input handlers: stops the loop immediately and destroys the
+        window on Flet's event loop (safe from sync or async callbacks).
+        """
+        self._loop.stop()
+        self._page.run_task(self._page.window.destroy)
+
     def run(self, scene: Scene | None = None) -> None:
         """Mount *scene* and start the game loop.
 

@@ -119,6 +119,8 @@ from .raycast import (
     DEFAULT_WALL_COLORS,
 )
 from .wall_texture import WallTexture
+from .stairs import StairDef
+from .ramp import RampDef
 
 # ── Step 12: VirtualJoystick — dynamic on-screen analogue joystick ───────────
 from .joystick import VirtualJoystick
@@ -146,6 +148,9 @@ from .isomap import IsoMap, IsoTile, iso_to_screen, screen_to_iso
 
 # ── Phase 5: PrefabLibrary — base64-embedded default sprites (no Pillow) ──────
 from .prefab import HERO, ENEMY, ITEM, SKELETON, SLIME, KEY, MEDKIT, BAT, PISTOL, RIFLE, SWORD, BAZOOKA, FIST, PISTOL_FPS, RIFLE_FPS, SWORD_FPS, BAZOOKA_FPS, FIST_FPS, PrefabSprite, PrefabCharacter, make_prefab_sprite_defs
+
+# ── Phase 5b: PngKit — zero-dependency procedural PNG / data-URI generation ───
+from .pngkit import Pix, FONT, make_text_png, make_rect_uri, encode_png, hex_to_rgb
 
 # ── Phase 6: SpriteLibrary — dynamic asset scanner for user sprites ──────────
 from .sprite_library import SpriteLibrary, SpriteEntry, SpriteState
@@ -200,6 +205,8 @@ __all__ = [
     "WallDecal",
     "CeilingLight",
     "FloorBand",
+    "StairDef",
+    "RampDef",
     "DEFAULT_MAP",
     "DEFAULT_WALL_COLORS",
     # Step 12 — Virtual joystick
@@ -244,6 +251,13 @@ __all__ = [
     "PrefabSprite",
     "PrefabCharacter",
     "make_prefab_sprite_defs",
+    # Phase 5b — PngKit
+    "Pix",
+    "FONT",
+    "make_text_png",
+    "make_rect_uri",
+    "encode_png",
+    "hex_to_rgb",
     # Phase 6 — SpriteLibrary
     "SpriteLibrary",
     "SpriteEntry",
